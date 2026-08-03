@@ -53,4 +53,23 @@ describe('sendOAuthError', () => {
       await s.close();
     }
   });
+
+  // The conditional status is scoped to invalid_client specifically, not to
+  // "any error sent via the header" — a non-invalid_client error must stay at
+  // 400 with no WWW-Authenticate even when usedAuthorizationHeader is true.
+  it('answers 400 with no WWW-Authenticate for invalid_grant via the header', async () => {
+    const s = await startServer({
+      'GET /e': (_r, res) =>
+        sendOAuthError(res, 'invalid_grant', 'bad code', {
+          usedAuthorizationHeader: true,
+        }),
+    });
+    try {
+      const res = await fetch(`${s.url}/e`);
+      expect(res.status).toBe(400);
+      expect(res.headers.get('www-authenticate')).toBeNull();
+    } finally {
+      await s.close();
+    }
+  });
 });
