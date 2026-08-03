@@ -1,0 +1,9 @@
+# Git worktrees
+.worktrees/
+
+# Build output
+dist/
+node_modules/
+
+# Workflow scratch
+.superpowers/
