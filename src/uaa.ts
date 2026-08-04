@@ -140,9 +140,7 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
       res.end(
         JSON.stringify({
           access_token: mintJwt({ expiresInSeconds: accessLifetime }),
-          // Non-null: registry.find(auth.clientId) above only succeeded because
-          // auth.clientId was defined.
-          refresh_token: issueRefreshToken(auth.clientId as string),
+          refresh_token: issueRefreshToken(client.clientId),
           token_type: 'bearer',
           expires_in: accessLifetime,
         }),

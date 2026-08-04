@@ -140,6 +140,30 @@ describe('mock UAA', () => {
     }
   });
 
+  it('refuses a code that was never issued', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: 'never-issued',
+          redirect_uri: 'http://localhost:61001/callback',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_grant',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
+
   it('answers 401 with WWW-Authenticate when Basic credentials are wrong', async () => {
     const uaa = await startMockUaa();
     try {
@@ -150,6 +174,33 @@ describe('mock UAA', () => {
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           authorization: basic('mock-client', 'wrong'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).toBeTruthy();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_client',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  it('answers 401 with WWW-Authenticate when the client_id is not registered at all', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const redirectUri = 'http://localhost:61001/callback';
+      const code = await getCode(uaa.url, redirectUri);
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('nobody', 'whatever'),
         },
         body: new URLSearchParams({
           grant_type: 'authorization_code',
