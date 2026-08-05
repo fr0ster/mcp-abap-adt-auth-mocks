@@ -12,7 +12,7 @@ import { readClientAuth } from './clientAuth';
 import {
   type ClientRegistryOptions,
   createClientRegistry,
-  refusedForeignCode,
+  refusedForeignCredential,
   refusedUnregisteredClient,
 } from './clients';
 import { mintJwt } from './jwt';
@@ -184,14 +184,12 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
           sendOAuthError(res, 'invalid_grant', 'unknown refresh token');
           return;
         }
-        if (owner !== auth.clientId) {
-          sendOAuthError(
-            res,
-            'invalid_grant',
-            'the refresh token was issued to a different client',
-          );
+        // The same guard the code exchange uses. Writing this check a second
+        // time by hand is how the two copies come to disagree.
+        if (
+          refusedForeignCredential(res, 'refresh token', owner, auth.clientId)
+        )
           return;
-        }
         let next = presented;
         if (rotate) {
           refreshTokens.delete(presented);
@@ -258,7 +256,8 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
       }
       // Without this, a server that knows two clients lets either redeem the
       // other's code and the identity in the token bears no relation to consent.
-      if (refusedForeignCode(res, issued.clientId, auth.clientId)) return;
+      if (refusedForeignCredential(res, 'code', issued.clientId, auth.clientId))
+        return;
       if (issued.used) {
         sendOAuthError(res, 'invalid_grant', 'code already used');
         return;

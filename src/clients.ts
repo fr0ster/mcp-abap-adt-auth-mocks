@@ -66,12 +66,18 @@ export function refusedUnregisteredClient(
 }
 
 /**
- * A code belongs to the client it was issued to.
+ * A credential belongs to the client it was issued to.
+ *
+ * Takes the credential's name so a code and a refresh token can share one
+ * implementation while still saying which one was presented. They are the same
+ * rule: a refresh token carries the authorization a code carried, so it crosses
+ * a client boundary just as badly.
  *
  * Returns true when it answered, meaning the caller must stop.
  */
-export function refusedForeignCode(
+export function refusedForeignCredential(
   res: http.ServerResponse,
+  credential: 'code' | 'refresh token',
   issuedTo: string,
   authenticatedAs: string | undefined,
 ): boolean {
@@ -79,7 +85,7 @@ export function refusedForeignCode(
   sendOAuthError(
     res,
     'invalid_grant',
-    'the code was issued to a different client',
+    `the ${credential} was issued to a different client`,
   );
   return true;
 }
