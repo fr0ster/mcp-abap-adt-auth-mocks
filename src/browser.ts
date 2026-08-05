@@ -87,7 +87,22 @@ export async function visit(url: string): Promise<VisitResult> {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams(form.fields).toString(),
+        // Manual, like every other fetch here. Left to its default the POST
+        // would follow a redirect on its own, outside the hop cap, and
+        // `finalUrl` below would still name the pre-redirect action.
+        redirect: 'manual',
       });
+      if (posted.status >= 300 && posted.status < 400) {
+        const location = posted.headers.get('location');
+        if (location) {
+          // A browser keeps going after the POST, and an ACS commonly
+          // redirects once it has consumed the assertion. Rejoin the loop so
+          // the hop cap and finalUrl stay honest — the next hop is a GET,
+          // which is what a browser issues after a 302 or 303.
+          current = new URL(location, form.action).toString();
+          continue;
+        }
+      }
       return {
         finalUrl: form.action,
         status: posted.status,
