@@ -8,8 +8,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { DOMParser } from '@xmldom/xmldom';
-import { readClientAuth } from './clientAuth';
 import {
+  authenticateClient,
   type ClientRegistryOptions,
   createClientRegistry,
   refusedForeignCredential,
@@ -143,23 +143,14 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
     },
 
     'POST /oauth/token': (req, res) => {
-      const auth = readClientAuth(req);
-      if (auth.conflict) {
-        sendOAuthError(res, 'invalid_client', 'header and body disagree', {
-          usedAuthorizationHeader: auth.usedAuthorizationHeader,
-        });
-        return;
-      }
-      const client = registry.find(auth.clientId);
-      if (
-        !client ||
-        (requireSecret && auth.clientSecret !== client.clientSecret)
-      ) {
-        sendOAuthError(res, 'invalid_client', 'unknown client', {
-          usedAuthorizationHeader: auth.usedAuthorizationHeader,
-        });
-        return;
-      }
+      const authenticated = authenticateClient(
+        req,
+        res,
+        registry,
+        requireSecret,
+      );
+      if (!authenticated) return;
+      const { auth, client } = authenticated;
 
       if (req.body.grant_type === 'refresh_token') {
         const presented = req.body.refresh_token ?? '';

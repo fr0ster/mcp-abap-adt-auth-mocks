@@ -13,14 +13,15 @@
  * whether the client does it.
  *
  * The code is bound to its client by the same functions the UAA mock uses —
- * `refusedUnregisteredClient` and `refusedForeignCredential`, both imported
- * from `./clients` rather than restated, so the two mocks cannot disagree
- * about what "bound to its client" means.
+ * `authenticateClient`, `refusedUnregisteredClient` and
+ * `refusedForeignCredential`, all imported from `./clients` rather than
+ * restated, so the two mocks cannot disagree about what "bound to its
+ * client" means.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { readClientAuth } from './clientAuth';
 import {
+  authenticateClient,
   createClientRegistry,
   refusedForeignCredential,
   refusedUnregisteredClient,
@@ -140,23 +141,14 @@ export async function startMockOidc(
     },
 
     'POST /token': (req, res) => {
-      const auth = readClientAuth(req);
-      if (auth.conflict) {
-        sendOAuthError(res, 'invalid_client', 'header and body disagree', {
-          usedAuthorizationHeader: auth.usedAuthorizationHeader,
-        });
-        return;
-      }
-      const client = registry.find(auth.clientId);
-      if (
-        !client ||
-        (requireSecret && auth.clientSecret !== client.clientSecret)
-      ) {
-        sendOAuthError(res, 'invalid_client', 'unknown client', {
-          usedAuthorizationHeader: auth.usedAuthorizationHeader,
-        });
-        return;
-      }
+      const authenticated = authenticateClient(
+        req,
+        res,
+        registry,
+        requireSecret,
+      );
+      if (!authenticated) return;
+      const { auth } = authenticated;
 
       if (req.body.grant_type !== 'authorization_code') {
         sendOAuthError(

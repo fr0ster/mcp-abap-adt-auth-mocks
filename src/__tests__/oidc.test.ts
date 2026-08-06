@@ -267,6 +267,31 @@ describe('mock OIDC', () => {
     }
   });
 
+  // The first trust-boundary refusal: with no redirect_uri there is nowhere to
+  // send an error to, so it can only be answered here.
+  it('refuses an authorize request with no redirect_uri at all', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        `${oidc.url}/authorize?${new URLSearchParams({
+          client_id: 'mock-client',
+          response_type: 'code',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }).toString()}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
   // The other side of the same rule: an unregistered client means the
   // redirect_uri it supplied cannot be trusted either, so this error must NOT
   // travel to the callback — sending it there would hand an attacker a

@@ -8,7 +8,9 @@
  */
 
 import type * as http from 'node:http';
+import { type ClientAuth, readClientAuth } from './clientAuth';
 import { sendOAuthError } from './oauthErrors';
+import type { RecordedRequest } from './server';
 
 export interface UaaClient {
   clientId: string;
@@ -88,4 +90,36 @@ export function refusedForeignCredential(
     `the ${credential} was issued to a different client`,
   );
   return true;
+}
+
+/**
+ * Authenticates the caller against the registry: reads the credentials, rejects
+ * a header/body disagreement, and checks the secret.
+ *
+ * Returns null when it has already answered, meaning the caller must stop.
+ * Otherwise returns both the registered client and the credentials as read —
+ * callers need the latter to ask the separate question `refusedForeignCredential`
+ * answers.
+ */
+export function authenticateClient(
+  req: RecordedRequest,
+  res: http.ServerResponse,
+  registry: ClientRegistry,
+  requireSecret: boolean,
+): { auth: ClientAuth; client: UaaClient } | null {
+  const auth = readClientAuth(req);
+  if (auth.conflict) {
+    sendOAuthError(res, 'invalid_client', 'header and body disagree', {
+      usedAuthorizationHeader: auth.usedAuthorizationHeader,
+    });
+    return null;
+  }
+  const client = registry.find(auth.clientId);
+  if (!client || (requireSecret && auth.clientSecret !== client.clientSecret)) {
+    sendOAuthError(res, 'invalid_client', 'unknown client', {
+      usedAuthorizationHeader: auth.usedAuthorizationHeader,
+    });
+    return null;
+  }
+  return { auth, client };
 }
