@@ -1,0 +1,295 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { describe, expect, it } from '@jest/globals';
+import { startMockOidc } from '../oidc';
+
+const basic = (id: string, secret: string) =>
+  `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`;
+
+function pkce() {
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+function authorizeUrl(base: string, params: Record<string, string>) {
+  return `${base}/authorize?${new URLSearchParams({
+    client_id: 'mock-client',
+    response_type: 'code',
+    redirect_uri: 'http://localhost:61001/callback',
+    ...params,
+  }).toString()}`;
+}
+
+describe('mock OIDC', () => {
+  it('serves a discovery document naming its own endpoints', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const doc = (await (
+        await fetch(`${oidc.url}/.well-known/openid-configuration`)
+      ).json()) as { authorization_endpoint: string; token_endpoint: string };
+      expect(doc.authorization_endpoint).toBe(`${oidc.url}/authorize`);
+      expect(doc.token_endpoint).toBe(`${oidc.url}/token`);
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // RFC 6749 §4.1.2.1 draws the line at trust: once client_id and redirect_uri
+  // check out, the error belongs at the callback. That is the path the client
+  // actually walks, and reproducing it is most of why this mock exists — a
+  // direct 400 would leave the client's error handling untested.
+  it('reports a missing code_challenge at the callback, not in the response', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const res = await fetch(authorizeUrl(oidc.url, { state: 'st-42' }), {
+        redirect: 'manual',
+      });
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.origin + location.pathname).toBe(
+        'http://localhost:61001/callback',
+      );
+      expect(location.searchParams.get('error')).toBe('invalid_request');
+      // Deliberately narrower than /code_challenge/: that pattern also matches
+      // the code_challenge_method mismatch message below ("unsupported
+      // code_challenge_method: ..." contains "code_challenge"), so it would
+      // stay green even if the dedicated presence check were deleted and this
+      // request fell through to the method check instead (undefined !== 'S256').
+      expect(location.searchParams.get('error_description')).toMatch(
+        /PKCE is required/,
+      );
+      // State is mirrored on the error path too — a client that validates it
+      // must be able to, or it cannot safely match the error to its request.
+      expect(location.searchParams.get('state')).toBe('st-42');
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('reports a code_challenge_method other than S256 at the callback', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'plain',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('invalid_request');
+      expect(location.searchParams.get('error_description')).toMatch(/plain/);
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('exchanges a code when the verifier matches the challenge', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { verifier, challenge } = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_verifier: verifier,
+          client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('refuses a verifier that does not derive the challenge', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const other = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_verifier: other.verifier,
+          client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_grant',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('mirrors state back unchanged', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          state: 'st-42',
+        }),
+        { redirect: 'manual' },
+      );
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('state')).toBe('st-42');
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('returns a different state when asked for wrongState', async () => {
+    const oidc = await startMockOidc({ state: 'wrongState' });
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          state: 'st-42',
+        }),
+        { redirect: 'manual' },
+      );
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('state')).not.toBe('st-42');
+      expect(location.searchParams.get('state')).toBeTruthy();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('omits state entirely when asked for missingState', async () => {
+    const oidc = await startMockOidc({ state: 'missingState' });
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          state: 'st-42',
+        }),
+        { redirect: 'manual' },
+      );
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('state')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The same rule as Task 4, restated here because "model it on uaa.ts" is
+  // exactly the kind of instruction that loses a check in translation.
+  it('refuses a code issued to a different client', async () => {
+    const oidc = await startMockOidc({
+      clients: [
+        { clientId: 'first-client', clientSecret: 'first-secret' },
+        { clientId: 'second-client', clientSecret: 'second-secret' },
+      ],
+    });
+    try {
+      const { verifier, challenge } = pkce();
+      const redirectUri = 'http://localhost:61001/callback';
+      const res = await fetch(
+        `${oidc.url}/authorize?${new URLSearchParams({
+          client_id: 'first-client',
+          response_type: 'code',
+          redirect_uri: redirectUri,
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }).toString()}`,
+        { redirect: 'manual' },
+      );
+      const code = new URL(res.headers.get('location') ?? '').searchParams.get(
+        'code',
+      );
+      expect(code).toBeTruthy();
+
+      const exchange = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('second-client', 'second-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: redirectUri,
+          code_verifier: verifier,
+        }).toString(),
+      });
+      expect(exchange.status).toBe(400);
+      expect(((await exchange.json()) as { error: string }).error).toBe(
+        'invalid_grant',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The other side of the same rule: an unregistered client means the
+  // redirect_uri it supplied cannot be trusted either, so this error must NOT
+  // travel to the callback — sending it there would hand an attacker a
+  // redirector. Contrast with the two PKCE cases above.
+  it('refuses an unregistered client_id without redirecting to it', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          client_id: 'nobody',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+});
