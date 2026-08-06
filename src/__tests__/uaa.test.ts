@@ -246,6 +246,35 @@ describe('mock UAA', () => {
     }
   });
 
+  // The registry lookup and the secret comparison are two questions, and every
+  // case above answers both at once: an unknown client that also presents a
+  // wrong secret is refused by the comparison, whatever the lookup does. With
+  // `requireClientSecret: false` the comparison is skipped, so the lookup is
+  // the only thing left — and this is the only case that proves it works.
+  it('refuses an unregistered client even when no secret is required', async () => {
+    const uaa = await startMockUaa({ requireClientSecret: false });
+    try {
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('nobody', ''),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: 'irrelevant',
+          redirect_uri: 'http://localhost:61001/callback',
+        }).toString(),
+      });
+      expect(res.status).toBe(401);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_client',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
+
   // A code belongs to the client it was issued to. A server that only checks
   // "is this a client I know" lets one client redeem another's consent.
   it('refuses a code issued to a different client', async () => {
