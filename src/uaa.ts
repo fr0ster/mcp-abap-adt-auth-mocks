@@ -14,6 +14,8 @@ import {
   createClientRegistry,
   refusedForeignCredential,
   refusedUnregisteredClient,
+  refusedUnregisteredRedirectUri,
+  type UaaClient,
 } from './clients';
 import { mintJwt } from './jwt';
 import { sendOAuthError } from './oauthErrors';
@@ -118,6 +120,9 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
       }
       const requestedClientId = req.query.client_id;
       if (refusedUnregisteredClient(res, registry, requestedClientId)) return;
+      // Non-null: refusedUnregisteredClient returned false, so it is set.
+      const client = registry.find(requestedClientId) as UaaClient;
+      if (refusedUnregisteredRedirectUri(res, client, redirectUri)) return;
       const target = new URL(redirectUri);
       if (denies) {
         target.searchParams.set('error', 'access_denied');
@@ -129,8 +134,7 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
         const code = randomUUID();
         codes.set(code, {
           redirectUri,
-          // Non-null: refusedUnregisteredClient returned false, so it is set.
-          clientId: requestedClientId as string,
+          clientId: client.clientId,
           issuedAt: Date.now(),
           used: false,
         });

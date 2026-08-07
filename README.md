@@ -89,6 +89,16 @@ wrote the mistake:
 - **An unregistered `client_id`** is refused directly at `/authorize` (never
   redirected — an unregistered client's `redirect_uri` cannot be trusted
   either).
+- **An unregistered `redirect_uri`** is refused the same way, directly and
+  never redirected, even for a `client_id` the mock does know. A `UaaClient`
+  carries `redirectUris?: string[]`, defaulting to
+  `['http://localhost:61001/callback']` — the callback
+  `@mcp-abap-adt/auth-providers` uses by default — and the match is exact,
+  byte-for-byte string comparison (RFC 6749 §3.1.2.3), never a prefix or
+  origin match. Without this a registered `client_id` would carry any
+  `redirect_uri` through, including an attacker's — an open redirect — and a
+  provider misconfigured with the wrong callback would pass silently instead
+  of being refused.
 - **A wrong or missing client secret** at the token endpoint is refused as
   `invalid_client`, with a `401` + `WWW-Authenticate` when the credentials
   arrived via the `Authorization` header and a `400` when they arrived in the
@@ -136,9 +146,10 @@ otherwise need to hand-craft a JWT or run a code flow and wait.
 
 Discovery at `GET /.well-known/openid-configuration`, PKCE demanded at
 `/authorize` and verified at `/token`, `state` mirrored (or deliberately
-corrupted, see above). Client binding and client authentication are the same
-functions the UAA mock uses, from `src/clients.ts` — not a second,
-independently-written copy that could quietly disagree.
+corrupted, see above). Client and redirect_uri binding and client
+authentication are the same functions the UAA mock uses, from
+`src/clients.ts` — not a second, independently-written copy that could
+quietly disagree.
 
 ### What this does and does not prove
 

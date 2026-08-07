@@ -453,4 +453,54 @@ describe('mock OIDC', () => {
       await oidc.close();
     }
   });
+
+  // The UAA twin is uaa.test.ts's 'refuses an unregistered redirect_uri
+  // without redirecting to it'. Same rule, same reason: an unregistered
+  // redirect_uri is exactly as untrustworthy as an unregistered client_id,
+  // for a known client_id just as much as an unknown one.
+  it('refuses an unregistered redirect_uri without redirecting to it', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          redirect_uri: 'https://attacker.invalid/cb',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The companion to the refusal above: a *registered but non-default* URI
+  // must be accepted, proving the registered list is actually consulted
+  // rather than a hardcoded default being compared.
+  it('accepts a registered non-default redirect_uri', async () => {
+    const oidc = await startMockOidc({
+      clients: [
+        {
+          clientId: 'mock-client',
+          clientSecret: 'mock-secret',
+          redirectUris: ['http://localhost:5555/other-callback'],
+        },
+      ],
+    });
+    try {
+      const { code } = await getOidcCode(
+        oidc.url,
+        'http://localhost:5555/other-callback',
+      );
+      expect(code).toBeTruthy();
+    } finally {
+      await oidc.close();
+    }
+  });
 });

@@ -276,13 +276,69 @@ describe('mock UAA', () => {
   });
 
   it('journals what the client sent', async () => {
-    const uaa = await startMockUaa();
+    const uaa = await startMockUaa({
+      clients: [
+        {
+          clientId: 'mock-client',
+          clientSecret: 'mock-secret',
+          redirectUris: ['http://localhost:49999/callback'],
+        },
+      ],
+    });
     try {
       await getCode(uaa.url, 'http://localhost:49999/callback');
       const authorize = uaa.requests.find((r) => r.path === '/oauth/authorize');
       expect(authorize?.query.redirect_uri).toBe(
         'http://localhost:49999/callback',
       );
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // RFC 6749 §3.1.2.3: a redirect_uri must be registered, exactly, before it
+  // is trusted with anything — including a code for a client the mock does
+  // know. Otherwise this mock models an open redirect: any URI reachable
+  // through a known client_id would get a code, silently hiding a consumer's
+  // typo'd or attacker-controlled callback.
+  it('refuses an unregistered redirect_uri without redirecting to it', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('https://attacker.invalid/cb')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // The companion to the refusal above: a *registered but non-default* URI
+  // must be accepted. Without this, "compare against the registered list"
+  // could regress to "compare against the hardcoded default" and still pass
+  // the refusal test, since https://attacker.invalid/cb is neither.
+  it('accepts a registered non-default redirect_uri', async () => {
+    const uaa = await startMockUaa({
+      clients: [
+        {
+          clientId: 'mock-client',
+          clientSecret: 'mock-secret',
+          redirectUris: ['http://localhost:5555/other-callback'],
+        },
+      ],
+    });
+    try {
+      const code = await getCode(
+        uaa.url,
+        'http://localhost:5555/other-callback',
+      );
+      expect(code).toBeTruthy();
     } finally {
       await uaa.close();
     }

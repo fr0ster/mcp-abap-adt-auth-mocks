@@ -12,9 +12,20 @@ import { type ClientAuth, readClientAuth } from './clientAuth';
 import { sendOAuthError } from './oauthErrors';
 import type { RecordedRequest } from './server';
 
+/** The callback `@mcp-abap-adt/auth-providers` uses by default. */
+export const DEFAULT_REDIRECT_URI = 'http://localhost:61001/callback';
+
 export interface UaaClient {
   clientId: string;
   clientSecret: string;
+  /**
+   * Permitted callback targets. Defaults to `[DEFAULT_REDIRECT_URI]` — not
+   * "anything the client happens to send". RFC 6749 §3.1.2.3 requires exact,
+   * byte-for-byte string comparison against a registered value, so a mock
+   * that matched by prefix or origin would teach a habit a real server
+   * refuses.
+   */
+  redirectUris?: string[];
 }
 
 export interface ClientRegistryOptions {
@@ -34,12 +45,16 @@ export interface ClientRegistry {
 export function createClientRegistry(
   options: ClientRegistryOptions = {},
 ): ClientRegistry {
-  const all = options.clients ?? [
+  const declared = options.clients ?? [
     {
       clientId: options.clientId ?? 'mock-client',
       clientSecret: options.clientSecret ?? 'mock-secret',
     },
   ];
+  const all = declared.map((c) => ({
+    ...c,
+    redirectUris: c.redirectUris ?? [DEFAULT_REDIRECT_URI],
+  }));
   return {
     all,
     find: (clientId) => all.find((c) => c.clientId === clientId),
@@ -63,6 +78,30 @@ export function refusedUnregisteredClient(
     res,
     'invalid_request',
     'client_id is missing or not registered',
+  );
+  return true;
+}
+
+/**
+ * RFC 6749 §3.1.2.3: a redirect_uri must match a registered value exactly —
+ * no prefix or origin matching. It is checked only once the client itself is
+ * known, but before anything is trusted with a redirect: an unregistered
+ * redirect_uri is exactly as untrustworthy as an unregistered client_id, and
+ * for the same reason — answering it with a redirect would hand an attacker
+ * a redirector for a known client.
+ *
+ * Returns true when it answered, meaning the caller must stop.
+ */
+export function refusedUnregisteredRedirectUri(
+  res: http.ServerResponse,
+  client: UaaClient,
+  redirectUri: string,
+): boolean {
+  if (client.redirectUris?.includes(redirectUri)) return false;
+  sendOAuthError(
+    res,
+    'invalid_request',
+    'redirect_uri is not registered for this client',
   );
   return true;
 }

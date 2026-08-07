@@ -13,10 +13,10 @@
  * whether the client does it.
  *
  * The code is bound to its client by the same functions the UAA mock uses —
- * `authenticateClient`, `refusedUnregisteredClient` and
- * `refusedForeignCredential`, all imported from `./clients` rather than
- * restated, so the two mocks cannot disagree about what "bound to its
- * client" means.
+ * `authenticateClient`, `refusedUnregisteredClient`,
+ * `refusedUnregisteredRedirectUri` and `refusedForeignCredential`, all
+ * imported from `./clients` rather than restated, so the two mocks cannot
+ * disagree about what "bound to its client" means.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -25,6 +25,7 @@ import {
   createClientRegistry,
   refusedForeignCredential,
   refusedUnregisteredClient,
+  refusedUnregisteredRedirectUri,
 } from './clients';
 import { mintJwt } from './jwt';
 import { sendOAuthError } from './oauthErrors';
@@ -100,6 +101,7 @@ export async function startMockOidc(
       if (refusedUnregisteredClient(res, registry, requestedClientId)) return;
       const client = registry.find(requestedClientId);
       if (!client) return; // unreachable: refusedUnregisteredClient already confirmed it
+      if (refusedUnregisteredRedirectUri(res, client, redirectUri)) return;
 
       const target = new URL(redirectUri);
       // Past this line the redirect_uri is trusted, so errors go to it.
