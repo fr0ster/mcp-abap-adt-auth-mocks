@@ -14,15 +14,249 @@ npm install --save-dev @mcp-abap-adt/auth-mocks
 This package is a standalone developer tool: it speaks HTTP, OAuth2 and SAML,
 and imports nothing from `@mcp-abap-adt/*`. It exists so that other packages in
 the family can test their authorization flows against a mock UAA/OAuth2
-server, a mock OIDC provider and a mock SAML identity provider — deterministically,
-without a live tenant.
+server, a mock OIDC provider and a mock SAML identity provider —
+deterministically, without a live tenant.
 
-Everything a mock server starts and stops inside a test; nothing here is meant
-to run in production.
+Every mock starts and stops inside a test; nothing here is meant to run in
+production. Each `start*` function returns a handle with `.url`, `.port`,
+`.requests` (every request the mock received, oldest first, for assertions)
+and `close()`.
 
-## Status
+**These mocks do not replace live testing.** They prove the mock's own
+behaviour is internally consistent and, for SAML, that an independent
+verifier accepts what it should and rejects what it checks — they do not
+prove the mock's wire format matches a real UAA, a real OIDC provider or a
+real identity provider. See
+["What signature verification here does and does not prove"](#what-signature-verification-here-does-and-does-not-prove)
+below for exactly what is and is not established, and keep running the real
+thing against a live tenant.
 
-Skeleton only. Mock servers land in subsequent releases.
+## Quick start: `visit` and the `openUrl` seam
+
+None of the mocks post a SAML assertion to the ACS themselves, and none of
+them are reached without someone following a redirect. That someone is
+normally a browser. `visit()` is a fake one, reduced to exactly what an
+authorization flow needs: it follows HTTP redirects and, when it lands on an
+auto-submitting HTML form (how the SAML POST binding works), it submits that
+form too.
+
+`visit` exists to be handed to whatever seam a consumer already uses to open
+a browser. In `@mcp-abap-adt/auth-providers`, that seam is `openUrl` on the
+default strategies (`browserCallbackStrategy`, `oidcCallbackStrategy`,
+`samlCallbackStrategy`) — the provider builds an authorization URL and calls
+`openUrl` with it instead of launching Chrome:
+
+```ts
+import { startMockUaa, visit } from '@mcp-abap-adt/auth-mocks';
+import {
+  AuthorizationCodeProvider,
+  browserCallbackStrategy,
+} from '@mcp-abap-adt/auth-providers';
+
+const uaa = await startMockUaa();
+try {
+  const provider = new AuthorizationCodeProvider({
+    uaaUrl: uaa.url,
+    clientId: 'mock-client',
+    clientSecret: 'mock-secret',
+    authorization: browserCallbackStrategy({
+      // openUrl's signature also carries a browser name and the bound
+      // redirect URI, neither of which visit() needs — it only wants the
+      // URL to fetch.
+      openUrl: async (url) => {
+        await visit(url);
+      },
+    }),
+  });
+
+  const { accessToken } = await provider.getTokens();
+} finally {
+  await uaa.close();
+}
+```
+
+`visit(url)` itself needs nothing beyond the URL — no browser, no consumer
+package, no shared state. That is why `src/browser.ts` imports nothing from
+the rest of this package: it is a browser, not a mock-aware helper, and the
+wiring above is what turns it into one for the duration of a login.
+
+## Mocks are strict by default
+
+Every mock refuses what a real server would refuse, so a client's mistake
+shows up as the mock's answer instead of an assertion written by whoever
+wrote the mistake:
+
+- **An unregistered `client_id`** is refused directly at `/authorize` (never
+  redirected — an unregistered client's `redirect_uri` cannot be trusted
+  either).
+- **A wrong or missing client secret** at the token endpoint is refused as
+  `invalid_client`, with a `401` + `WWW-Authenticate` when the credentials
+  arrived via the `Authorization` header and a `400` when they arrived in the
+  body, matching RFC 6749 §5.2 exactly rather than always answering one or
+  the other.
+- **A code or a refresh token is bound to the client it was issued to.**
+  Register two clients and try to redeem the first client's code, or its
+  refresh token, while authenticated as the second, and the mock answers
+  `invalid_grant` — "the code/refresh token was issued to a different
+  client" — even though the credential itself is real and unexpired. This
+  rule is implemented once, in `src/clients.ts`, and shared by both the UAA
+  and OIDC mocks so they cannot disagree about what "issued to" means.
+- **A used or expired authorization code** is refused, as is a
+  **`redirect_uri`** that does not match the one used to request the code.
+- **The OIDC mock demands PKCE.** `/authorize` refuses a request with no
+  `code_challenge`, no `code_challenge_method`, or a method other than
+  `S256`. `/token` then verifies the presented `code_verifier` derives the
+  challenge. `state` is mirrored back unchanged by default, never judged —
+  validating `state` is the client's job, and a mock that checked it would
+  hide whether the client does. `startMockOidc({ state: 'wrongState' })` and
+  `{ state: 'missingState' }` exist to test that the client notices when a
+  server does not behave.
+- **Refresh tokens rotate by default** (`rotateRefreshTokens: true`): each
+  refresh exchange invalidates the presented token and issues a new one, and
+  presenting an already-superseded token is refused as reuse — configurable
+  to `false` for servers that hand back the same refresh token indefinitely,
+  since both behaviours exist among real UAAs.
+- **The SAML bearer grant**
+  (`urn:ietf:params:oauth:grant-type:saml2-bearer`) can be `'strict'` (the
+  default), `'lenient'`, or `'off'` — see
+  [RFC 7522 and `samlBearer: 'strict'`](#rfc-7522-and-samlbearer-strict)
+  below.
+
+## Mock UAA (`startMockUaa`)
+
+Authorization code grant at `GET /oauth/authorize` / `POST /oauth/token`,
+refresh at the same token endpoint, and the SAML 2.0 bearer grant. Access
+tokens are syntactically valid JWTs (`mintJwt`) carrying `exp`/`iat`; nothing
+in the family verifies their signature, only the shape and expiry.
+`mintExpiredAccessWithValidRefresh()` returns an already-expired access token
+paired with a still-valid refresh token, for a refresh test that would
+otherwise need to hand-craft a JWT or run a code flow and wait.
+
+## Mock OIDC (`startMockOidc`)
+
+Discovery at `GET /.well-known/openid-configuration`, PKCE demanded at
+`/authorize` and verified at `/token`, `state` mirrored (or deliberately
+corrupted, see above). Client binding and client authentication are the same
+functions the UAA mock uses, from `src/clients.ts` — not a second,
+independently-written copy that could quietly disagree.
+
+## Mock SAML IdP (`startMockSamlIdp`)
+
+`GET /sso` turns an HTTP-Redirect-bound `AuthnRequest` into an
+auto-submitting HTML form carrying a `samlp:Response`, signed with a fresh,
+per-instance, in-memory key pair and certificate (`generateKeyMaterial`,
+`signXml`, `certificatePem` on the handle). It never posts to the ACS
+itself — only a browser, or `visit()` standing in for one, does that; see
+[Quick start](#quick-start-visit-and-the-openurl-seam) above.
+
+### Corruption variants
+
+`startMockSamlIdp({ variant })` and `idp.setVariant(v)` select one of twelve
+shapes. Every variant changes exactly one field of an otherwise-valid
+response, so a rejection is attributable to that field rather than to an
+accumulation of mistakes. The **Verified by** column names what actually
+proved each row: `@node-saml/node-saml@5.1.0`'s `validatePostResponseAsync`
+where it inspects that field, or "structural (canary)" where it does not —
+read directly from the installed library's source
+(`src/__tests__/samlVerification.test.ts`), not assumed from its docs.
+
+| Variant | What changes | Verified by |
+|---|---|---|
+| `valid` | (nothing — the baseline) | node-saml: accepted |
+| `unsigned` | no `<Signature>` at all | node-saml: rejected (`Invalid signature`) |
+| `wrongKey` | signed with an unrelated key pair | node-saml: rejected (`Invalid signature`) |
+| `tamperedAfterSign` | signed content mutated after signing | node-saml: rejected (`Invalid signature`) |
+| `expired` | `NotOnOrAfter` in the past | node-saml: rejected |
+| `notYetValid` | `NotBefore` in the future | node-saml: rejected |
+| `wrongAudience` | `Audience` does not match | node-saml: rejected |
+| `wrongInResponseTo` | `InResponseTo` names no live request | node-saml: rejected |
+| `statusFailure` | `<samlp:Status>` reports failure | **structural (canary)** — see below |
+| `wrongIssuer` | `Issuer` does not match | **structural (canary)** — see below |
+| `wrongDestination` | `Response@Destination` does not match the ACS | **structural (canary)** — see below |
+| `wrongRecipient` | `SubjectConfirmationData@Recipient` does not match the ACS | **structural (canary)** — see below |
+
+**Four of the twelve rows have no independent judge here**, for two distinct
+reasons, both confirmed by reading `node_modules/@node-saml/node-saml`'s
+source rather than assumed from its documentation:
+
+- `wrongDestination` and `wrongRecipient` — node-saml's response validation
+  never reads `Destination` or `Recipient` at all. Its source shows
+  `Recipient` does not occur outside test fixtures, and `Destination` occurs
+  only in the code that *builds* an outgoing request, never in the code that
+  *validates* an incoming response.
+- `statusFailure` and `wrongIssuer` — node-saml only reads the top-level
+  `<samlp:Status>` inside a branch that is unreachable once a validly-signed
+  `Assertion` is present, and only compares `idpIssuer` against the message
+  on the **logout** path (`verifyIssuer`, called from `verifyLogoutRequest`
+  / `verifyLogoutResponse`), never from `validatePostResponseAsync`. A
+  Responder-failure status or a forged issuer riding alongside an otherwise
+  valid, validly-signed assertion is accepted outright on this path.
+
+All four are asserted **structurally** instead (the corrupted field is
+present and differs from `valid`, and the verifier resolves rather than
+rejects) and pinned as **canaries**: if a future version of node-saml starts
+checking one of them, the corresponding test in
+`src/__tests__/samlVerification.test.ts` will start failing — signalling
+"this field is judged now," not a defect in the mock. Until then, a mock IdP
+that gets any of these four fields wrong has no automated judge in this
+suite at all; only a live test against a relying party that enforces its
+own checks on these fields would catch it.
+
+### Replay: a sequence, not a variant
+
+A replayed SAML assertion is, in isolation, perfectly valid — that is
+exactly why replay is dangerous, and exactly why no off-the-shelf verifier
+rejects one on sight. Remembering which assertion IDs have already been
+consumed is the relying party's job, not the identity provider's, so this
+package cannot offer "the replay variant" the way it offers `wrongAudience`
+or `expired`. What it offers instead is the two-step shape that *makes*
+replay dangerous:
+
+```ts
+const idp = await startMockSamlIdp();
+// ... deliver an assertion once ...
+idp.repeatLastAssertion(); // one-shot: reuses the previous assertion's ID next time
+// ... deliver again ...
+```
+
+Both deliveries are individually valid and share one assertion ID. A
+verifier that has never seen the first one accepts the second exactly as
+readily — which is the point: nothing in the second message is malformed,
+so only a relying party that remembers assertion IDs it has already
+consumed can catch the replay. This package proves the two deliveries are
+indistinguishable to a naive verifier rather than pretending to detect the
+replay itself — that detection is exactly what a consuming package's own
+validation strategy is responsible for building and is what this mock exists
+to let it be tested against.
+
+There is a trap immediately next door that looks like replay detection but
+is not: node-saml's *request*-ID cache is one-shot (`removeAsync` on
+`InResponseTo` after a successful validation), so a **second, freshly-minted**
+assertion answering the same, already-consumed `AuthnRequest` is rejected
+too — for a reason that has nothing to do with the assertion ID repeating.
+`src/__tests__/samlVerification.test.ts` covers this with a *fresh* second
+assertion specifically so the rejection cannot be mistaken for replay
+detection.
+
+### RFC 7522 and `samlBearer: 'strict'`
+
+`startMockUaa({ samlBearer: 'strict' })` (the default) enforces RFC 7522
+§2.1: the `assertion` parameter of the SAML 2.0 bearer grant must be a
+**base64url**-encoded (no `+`, `/`, or padding) **`<saml:Assertion>`** as the
+document's own root element — not a `<samlp:Response>` wrapping one, and not
+base64 with the standard alphabet.
+
+This surfaced a real finding about a consumer rather than about the mock:
+`exchangeSamlAssertion` in `@mcp-abap-adt/auth-providers` currently sends a
+**base64** `samlp:Response`, not a base64url `Assertion`. Against
+`samlBearer: 'strict'`, that request is refused. `samlBearer: 'lenient'`
+accepts whatever a real, permissive UAA might accept without enforcing the
+RFC's document-shape requirement, and `samlBearer: 'off'` refuses the grant
+outright (`unsupported_grant_type`), for testing a server that never enabled
+it. Use `'strict'` to hold a client to the RFC; use `'lenient'` or `'off'`
+only to reproduce a specific real server's looser or absent behaviour —
+reaching for `'lenient'` just to make a non-conformant client's test pass
+would hide the same finding this package exists to surface.
 
 ## What signature verification here does and does not prove
 
@@ -36,17 +270,23 @@ prove the mock IdP is a faithful stand-in for a real one. Concretely:
   library that produced it. A canonicalisation or signing bug shared between
   producing and checking the signature would not be caught here.
 - `@node-saml/node-saml`, used elsewhere in this family's test suites,
-  independently checks signature validity, `Conditions` timestamps,
-  `Audience`, `Issuer` and `InResponseTo` — but it shares `xml-crypto`
+  independently checks signature validity, `Conditions` timestamps and
+  `Audience` at the SAML-profile level — but it shares `xml-crypto`
   underneath for the actual cryptography, so it is not an independent
   implementation of XML-DSig either.
-- It checks **neither `Destination` nor `SubjectConfirmationData@Recipient`**,
-  so a mock IdP that gets those two fields wrong has no judge in this suite.
+- As detailed in [Corruption variants](#corruption-variants) above, it
+  checks **none of `Destination`, `SubjectConfirmationData@Recipient`, the
+  top-level `<samlp:Status>`, or the Assertion's `Issuer`** on the response
+  path this suite exercises, so a mock IdP that gets any of those four
+  wrong has no judge in this suite.
 - It has **no assertion-ID replay cache** — replaying a captured assertion is
   not something this package or `@node-saml/node-saml` will flag; replay
-  detection is the relying party's responsibility.
+  detection is the relying party's responsibility (see
+  [Replay: a sequence, not a variant](#replay-a-sequence-not-a-variant)
+  above).
 - None of the above proves canonicalisation matches what a real identity
   provider produces. A green suite here is evidence the mock's own signature
-  round-trips, not evidence the mock's SAML profile matches a live IdP.
-  **Live testing against a real identity provider remains necessary** and is
-  not made obsolete by these tests passing.
+  round-trips and that an independent library accepts what it should and
+  rejects what it checks, not evidence the mock's SAML profile matches a
+  live IdP byte-for-byte. **Live testing against a real identity provider
+  remains necessary** and is not made obsolete by these tests passing.
