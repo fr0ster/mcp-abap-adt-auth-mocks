@@ -132,6 +132,32 @@ export function refusedForeignCredential(
 }
 
 /**
+ * RFC 6749 §4.1.2.1: once client_id and redirect_uri are trusted, every later
+ * refusal at the authorization endpoint is reported *at the callback* — a 302
+ * to `target` carrying `error` and `error_description` — rather than answered
+ * directly. Both mocks hit this shape (OIDC for PKCE, and both for
+ * response_type), so it is written once here rather than as two redirect
+ * builders that could drift apart on status code or header name.
+ *
+ * `state`, if the caller wants it mirrored, must already be set on `target`
+ * before this is called — OIDC's corruption modes (`wrongState`,
+ * `missingState`) mean "mirror the incoming state" is not the same operation
+ * in both mocks, so this only sends what it is given.
+ */
+export function sendRedirectError(
+  res: http.ServerResponse,
+  target: URL,
+  error: string,
+  description: string,
+): void {
+  target.searchParams.set('error', error);
+  target.searchParams.set('error_description', description);
+  res.statusCode = 302;
+  res.setHeader('Location', target.toString());
+  res.end();
+}
+
+/**
  * Authenticates the caller against the registry: reads the credentials, rejects
  * a header/body disagreement, and checks the secret.
  *

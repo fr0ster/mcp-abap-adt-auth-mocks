@@ -16,7 +16,10 @@
  * `authenticateClient`, `refusedUnregisteredClient`,
  * `refusedUnregisteredRedirectUri` and `refusedForeignCredential`, all
  * imported from `./clients` rather than restated, so the two mocks cannot
- * disagree about what "bound to its client" means.
+ * disagree about what "bound to its client" means. `sendRedirectError` is
+ * shared the same way for the errors both mocks report at the callback
+ * rather than directly (missing/unsupported `response_type`, and here,
+ * PKCE).
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -26,6 +29,7 @@ import {
   refusedForeignCredential,
   refusedUnregisteredClient,
   refusedUnregisteredRedirectUri,
+  sendRedirectError,
 } from './clients';
 import { mintJwt } from './jwt';
 import { sendOAuthError } from './oauthErrors';
@@ -104,26 +108,41 @@ export async function startMockOidc(
       if (refusedUnregisteredRedirectUri(res, client, redirectUri)) return;
 
       const target = new URL(redirectUri);
-      // Past this line the redirect_uri is trusted, so errors go to it.
-      const redirectError = (description: string): void => {
-        target.searchParams.set('error', 'invalid_request');
-        target.searchParams.set('error_description', description);
+      // Past this line client_id and redirect_uri are both trusted, so every
+      // remaining refusal is reported at the callback rather than answered
+      // directly.
+      const redirectError = (error: string, description: string): void => {
         applyState(target, req.query.state);
-        res.statusCode = 302;
-        res.setHeader('Location', target.toString());
-        res.end();
+        sendRedirectError(res, target, error, description);
       };
+
+      const responseType = req.query.response_type;
+      if (responseType === undefined) {
+        redirectError('invalid_request', 'response_type is required');
+        return;
+      }
+      if (responseType !== 'code') {
+        redirectError(
+          'unsupported_response_type',
+          `unsupported response_type: ${responseType}`,
+        );
+        return;
+      }
 
       const challenge = req.query.code_challenge;
       const method = req.query.code_challenge_method;
       if (!challenge || !method) {
         redirectError(
+          'invalid_request',
           'PKCE is required: code_challenge and code_challenge_method',
         );
         return;
       }
       if (method !== 'S256') {
-        redirectError(`unsupported code_challenge_method: ${method}`);
+        redirectError(
+          'invalid_request',
+          `unsupported code_challenge_method: ${method}`,
+        );
         return;
       }
 

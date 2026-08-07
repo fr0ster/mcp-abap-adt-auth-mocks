@@ -344,6 +344,55 @@ describe('mock UAA', () => {
     }
   });
 
+  // RFC 6749 §4.1.2.1: this refusal falls after the trust boundary
+  // (client_id and redirect_uri are already valid), so it is reported at the
+  // callback rather than answered directly — the same shape as the OIDC
+  // mock's PKCE refusals.
+  it('refuses an authorize request with no response_type', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback')}` +
+          '&state=st-1',
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.origin + location.pathname).toBe(
+        'http://localhost:61001/callback',
+      );
+      expect(location.searchParams.get('error')).toBe('invalid_request');
+      expect(location.searchParams.get('error_description')).toMatch(
+        /response_type is required/,
+      );
+      expect(location.searchParams.get('state')).toBe('st-1');
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  it('refuses a response_type other than code, at the callback', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=token` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe(
+        'unsupported_response_type',
+      );
+      expect(location.searchParams.get('error_description')).toMatch(/token/);
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await uaa.close();
+    }
+  });
+
   // The registry lookup and the secret comparison are two questions, and every
   // case above answers both at once: an unknown client that also presents a
   // wrong secret is refused by the comparison, whatever the lookup does. With

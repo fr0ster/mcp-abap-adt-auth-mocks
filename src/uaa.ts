@@ -15,6 +15,7 @@ import {
   refusedForeignCredential,
   refusedUnregisteredClient,
   refusedUnregisteredRedirectUri,
+  sendRedirectError,
   type UaaClient,
 } from './clients';
 import { mintJwt } from './jwt';
@@ -123,24 +124,56 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
       // Non-null: refusedUnregisteredClient returned false, so it is set.
       const client = registry.find(requestedClientId) as UaaClient;
       if (refusedUnregisteredRedirectUri(res, client, redirectUri)) return;
+
       const target = new URL(redirectUri);
+      // Past this line client_id and redirect_uri are both trusted, so every
+      // remaining refusal is reported at the callback rather than answered
+      // directly.
+      const mirrorState = (): void => {
+        if (req.query.state) target.searchParams.set('state', req.query.state);
+      };
+
+      const responseType = req.query.response_type;
+      if (responseType === undefined) {
+        mirrorState();
+        sendRedirectError(
+          res,
+          target,
+          'invalid_request',
+          'response_type is required',
+        );
+        return;
+      }
+      if (responseType !== 'code') {
+        mirrorState();
+        sendRedirectError(
+          res,
+          target,
+          'unsupported_response_type',
+          `unsupported response_type: ${responseType}`,
+        );
+        return;
+      }
+
       if (denies) {
-        target.searchParams.set('error', 'access_denied');
-        target.searchParams.set(
-          'error_description',
+        mirrorState();
+        sendRedirectError(
+          res,
+          target,
+          'access_denied',
           'the mock was told to deny',
         );
-      } else {
-        const code = randomUUID();
-        codes.set(code, {
-          redirectUri,
-          clientId: client.clientId,
-          issuedAt: Date.now(),
-          used: false,
-        });
-        target.searchParams.set('code', code);
+        return;
       }
-      if (req.query.state) target.searchParams.set('state', req.query.state);
+      const code = randomUUID();
+      codes.set(code, {
+        redirectUri,
+        clientId: client.clientId,
+        issuedAt: Date.now(),
+        used: false,
+      });
+      target.searchParams.set('code', code);
+      mirrorState();
       res.statusCode = 302;
       res.setHeader('Location', target.toString());
       res.end();

@@ -503,4 +503,63 @@ describe('mock OIDC', () => {
       await oidc.close();
     }
   });
+
+  // RFC 6749 §4.1.2.1: this falls after the trust boundary (client_id and
+  // redirect_uri are already valid), so — like the two PKCE refusals above —
+  // it is reported at the callback rather than answered directly. PKCE
+  // parameters are included so that, were the response_type check deleted,
+  // the request would fall through and receive a code instead of merely
+  // hitting a different refusal.
+  it('refuses an authorize request with no response_type, at the callback', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        `${oidc.url}/authorize?${new URLSearchParams({
+          client_id: 'mock-client',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          state: 'st-9',
+        }).toString()}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('invalid_request');
+      // Deliberately narrower than /response_type/: that also matches the
+      // unsupported_response_type message below.
+      expect(location.searchParams.get('error_description')).toMatch(
+        /response_type is required/,
+      );
+      expect(location.searchParams.get('state')).toBe('st-9');
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('refuses a response_type other than code, at the callback', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          response_type: 'token',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe(
+        'unsupported_response_type',
+      );
+      expect(location.searchParams.get('error_description')).toMatch(/token/);
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
 });

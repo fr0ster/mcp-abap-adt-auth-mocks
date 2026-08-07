@@ -99,6 +99,13 @@ wrote the mistake:
   `redirect_uri` through, including an attacker's — an open redirect — and a
   provider misconfigured with the wrong callback would pass silently instead
   of being refused.
+- **`response_type` must be exactly `code`.** Missing or set to anything else
+  (`token`, for instance), `/authorize` refuses it. Unlike the two checks
+  above, this falls *after* the trust boundary — `client_id` and
+  `redirect_uri` are already valid — so per RFC 6749 §4.1.2.1 it is reported
+  **at the callback**: a `302` carrying `error` (`invalid_request` when
+  absent, `unsupported_response_type` when present but wrong),
+  `error_description`, and the mirrored `state`.
 - **A wrong or missing client secret** at the token endpoint is refused as
   `invalid_client`, with a `401` + `WWW-Authenticate` when the credentials
   arrived via the `Authorization` header and a `400` when they arrived in the
@@ -146,10 +153,10 @@ otherwise need to hand-craft a JWT or run a code flow and wait.
 
 Discovery at `GET /.well-known/openid-configuration`, PKCE demanded at
 `/authorize` and verified at `/token`, `state` mirrored (or deliberately
-corrupted, see above). Client and redirect_uri binding and client
-authentication are the same functions the UAA mock uses, from
-`src/clients.ts` — not a second, independently-written copy that could
-quietly disagree.
+corrupted, see above). Client and redirect_uri binding, client
+authentication, and the shape of a callback-reported error are the same
+functions the UAA mock uses, from `src/clients.ts` — not a second,
+independently-written copy that could quietly disagree.
 
 ### What this does and does not prove
 
