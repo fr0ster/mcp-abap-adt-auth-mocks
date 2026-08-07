@@ -4,6 +4,15 @@ import { startMockUaa } from '../uaa';
 const basic = (id: string, secret: string) =>
   `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`;
 
+// RFC 6749 §2.3.1: the client identifier and secret are
+// application/x-www-form-urlencoded-encoded *before* going into `user-pass`.
+// `encodeURIComponent` matches form encoding for every character this suite
+// exercises (it never needs the `+`-for-space rule the server also honours).
+const basicFormEncoded = (id: string, secret: string) =>
+  `Basic ${Buffer.from(
+    `${encodeURIComponent(id)}:${encodeURIComponent(secret)}`,
+  ).toString('base64')}`;
+
 /** Drives /authorize the way a browser would, returning the code it lands with. */
 async function getCode(
   url: string,
@@ -159,6 +168,39 @@ describe('mock UAA', () => {
       expect(((await res.json()) as { error: string }).error).toBe(
         'invalid_grant',
       );
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // RFC 6749 §2.3.1 requires the client identifier and secret to be
+  // form-decoded after Base64. A registered secret containing ':' — the
+  // sharpest case, since ':' is also the user-pass separator — must survive
+  // that decoding, or a real client whose secret needs encoding is refused
+  // as invalid_client for a mismatch the mock introduced itself.
+  it('accepts Basic credentials whose id and secret contain a colon', async () => {
+    const uaa = await startMockUaa({
+      clients: [{ clientId: 'client:one', clientSecret: 'secret:two' }],
+    });
+    try {
+      const redirectUri = 'http://localhost:61001/callback';
+      const code = await getCode(uaa.url, redirectUri, 'client:one');
+      expect(code).toBeTruthy();
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basicFormEncoded('client:one', 'secret:two'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { access_token: string };
+      expect(json.access_token.split('.')).toHaveLength(3);
     } finally {
       await uaa.close();
     }
