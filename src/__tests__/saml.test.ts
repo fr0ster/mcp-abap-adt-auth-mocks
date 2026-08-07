@@ -6,10 +6,20 @@ import { visit } from '../browser';
 import { startMockSamlIdp } from '../saml';
 import { startServer } from '../server';
 
+/** Escapes a value for an XML attribute delimited by double quotes. */
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 function authnRequest(acsUrl: string, id = '_req1'): string {
   const xml =
     `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
-    `ID="${id}" Version="2.0" AssertionConsumerServiceURL="${acsUrl}"/>`;
+    `ID="${id}" Version="2.0" AssertionConsumerServiceURL="${escapeXmlAttribute(acsUrl)}"/>`;
   return deflateRawSync(Buffer.from(xml, 'utf8')).toString('base64');
 }
 
@@ -175,11 +185,23 @@ describe('mock SAML IdP', () => {
       );
       expect(acs.received).toHaveLength(1);
       expect(acs.received[0].RelayState).toBe(relayState);
+      // The POST actually landed with the query string intact — routing
+      // matches on pathname alone, so this is the only thing here that would
+      // notice the query string being mangled on the way through the form.
+      expect(acs.requests[acs.requests.length - 1].query).toEqual({
+        tenant: 'one',
+        flow: 'saml',
+      });
       // The response still decodes, so the SAMLResponse survived escaping too.
       const xml = Buffer.from(acs.received[0].SAMLResponse, 'base64').toString(
         'utf8',
       );
       expect(xml).toContain('Assertion');
+      // Destination and Recipient are the ACS URL read back from the
+      // AuthnRequest; a decoding mistake there corrupts both.
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      const destination = doc.documentElement?.getAttribute('Destination');
+      expect(destination).toBe(acsUrl);
     } finally {
       await idp.close();
       await acs.close();
@@ -239,6 +261,56 @@ describe('mock SAML IdP', () => {
     } finally {
       await idp.close();
       await acs.close();
+    }
+  });
+
+  it('refuses a request with no SAMLRequest parameter', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const res = await fetch(`${idp.url}/sso`);
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/SAMLRequest/);
+    } finally {
+      await idp.close();
+    }
+  });
+
+  it('refuses an AuthnRequest with no AssertionConsumerServiceURL', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/AssertionConsumerServiceURL/);
+    } finally {
+      await idp.close();
+    }
+  });
+
+  // The regex this replaced never rejected malformed XML — it simply found no
+  // match and fell through to the "missing AssertionConsumerServiceURL"
+  // refusal. A parser distinguishes the two failures, and a caller debugging
+  // a broken AuthnRequest deserves to be told which one happened.
+  it('refuses a SAMLRequest that does not decode to XML at all', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const encoded = deflateRawSync(
+        Buffer.from('not xml at all', 'utf8'),
+      ).toString('base64');
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/did not parse as XML/);
+    } finally {
+      await idp.close();
     }
   });
 });

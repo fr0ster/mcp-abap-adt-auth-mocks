@@ -18,6 +18,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
+import { DOMParser, type Element } from '@xmldom/xmldom';
 import { type MockHandle, startServer } from './server';
 import { generateKeyMaterial, type KeyMaterial, signXml } from './signing';
 
@@ -212,10 +213,37 @@ export async function startMockSamlIdp(
       const inflated = inflateRawSync(Buffer.from(encoded, 'base64')).toString(
         'utf8',
       );
-      const acsUrl = /AssertionConsumerServiceURL="([^"]*)"/.exec(
-        inflated,
-      )?.[1];
-      const requestId = /\bID="([^"]*)"/.exec(inflated)?.[1] ?? '';
+
+      // Parsed with a full XML parser rather than a regex, the same way
+      // uaa.ts's rejectNonAssertion reads an Assertion. The plan that
+      // shipped the regex justified it on the grounds that the request is
+      // one the family builds, so a full parse was not warranted — but a
+      // valid AssertionConsumerServiceURL can legitimately carry a query
+      // string, which the AuthnRequest transports XML-escaped (e.g.
+      // `&amp;`). A regex reads that escaping literally; only a parser's
+      // `getAttribute` decodes entities the way the XML spec requires, and
+      // this value is echoed into Destination and
+      // SubjectConfirmationData@Recipient too, so a decoding mistake here
+      // corrupts all three.
+      let root: Element | null;
+      try {
+        root = new DOMParser().parseFromString(
+          inflated,
+          'text/xml',
+        ).documentElement;
+      } catch {
+        res.statusCode = 400;
+        res.end('AuthnRequest did not parse as XML');
+        return;
+      }
+      if (!root) {
+        res.statusCode = 400;
+        res.end('AuthnRequest did not parse as XML');
+        return;
+      }
+      const acsUrl =
+        root.getAttribute('AssertionConsumerServiceURL') || undefined;
+      const requestId = root.getAttribute('ID') ?? '';
       if (!acsUrl) {
         res.statusCode = 400;
         res.end('missing AssertionConsumerServiceURL');
