@@ -20,6 +20,28 @@ function authorizeUrl(base: string, params: Record<string, string>) {
   }).toString()}`;
 }
 
+/** Drives /authorize the way a browser would, with PKCE, returning the code and its verifier. */
+async function getOidcCode(
+  base: string,
+  redirectUri: string,
+  clientId = 'mock-client',
+): Promise<{ code: string; verifier: string }> {
+  const { verifier, challenge } = pkce();
+  const res = await fetch(
+    `${base}/authorize?${new URLSearchParams({
+      client_id: clientId,
+      response_type: 'code',
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    }).toString()}`,
+    { redirect: 'manual' },
+  );
+  const code =
+    new URL(res.headers.get('location') ?? '').searchParams.get('code') ?? '';
+  return { code, verifier };
+}
+
 describe('mock OIDC', () => {
   it('serves a discovery document naming its own endpoints', async () => {
     const oidc = await startMockOidc();
@@ -149,6 +171,120 @@ describe('mock OIDC', () => {
           redirect_uri: 'http://localhost:61001/callback',
           code_verifier: other.verifier,
           client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_grant',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The UAA twin has no counterpart test at all — every OIDC test until now
+  // sent only 'authorization_code'.
+  it('refuses a grant_type other than authorization_code', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'unsupported_grant_type',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The UAA twin is uaa.test.ts's 'refuses a code used twice'.
+  it('refuses a code used twice', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const redirectUri = 'http://localhost:61001/callback';
+      const { code, verifier } = await getOidcCode(oidc.url, redirectUri);
+      const exchange = () =>
+        fetch(`${oidc.url}/token`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            authorization: basic('mock-client', 'mock-secret'),
+          },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            code_verifier: verifier,
+          }).toString(),
+        });
+      expect((await exchange()).status).toBe(200);
+      const second = await exchange();
+      expect(second.status).toBe(400);
+      expect(((await second.json()) as { error: string }).error).toBe(
+        'invalid_grant',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The UAA twin is uaa.test.ts's 'refuses an expired code', using the same
+  // codeLifetimeMs option.
+  it('refuses an expired code', async () => {
+    const oidc = await startMockOidc({ codeLifetimeMs: 50 });
+    try {
+      const redirectUri = 'http://localhost:61001/callback';
+      const { code, verifier } = await getOidcCode(oidc.url, redirectUri);
+      await new Promise((r) => setTimeout(r, 120));
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+          code_verifier: verifier,
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_grant',
+      );
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The UAA twin is uaa.test.ts's 'refuses a redirect_uri that differs from
+  // the authorize request'.
+  it('refuses a redirect_uri that differs from the authorize request', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const redirectUri = 'http://localhost:61001/callback';
+      const { code, verifier } = await getOidcCode(oidc.url, redirectUri);
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: 'http://localhost:3001/callback',
+          code_verifier: verifier,
         }).toString(),
       });
       expect(res.status).toBe(400);

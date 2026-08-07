@@ -140,6 +140,21 @@ corrupted, see above). Client binding and client authentication are the same
 functions the UAA mock uses, from `src/clients.ts` — not a second,
 independently-written copy that could quietly disagree.
 
+### What this does and does not prove
+
+The token exchange returns no `id_token`, though OIDC Core §3.1.3.3 requires
+one for an `openid`-scoped authorization code exchange — a consumer whose
+provider never validates an `id_token` passes silently against this mock.
+The discovery document is a deliberate minimum subset — `issuer`,
+`authorization_endpoint`, `token_endpoint`,
+`code_challenge_methods_supported`, and `response_types_supported` — and
+omits `jwks_uri`, `subject_types_supported`, and
+`id_token_signing_alg_values_supported`, all three required by OIDC
+Discovery §3, so a client using a conformant discovery library would refuse
+it. A consumer's `id_token` handling therefore has no judge in this suite;
+**live testing against a real OIDC provider remains necessary** and is not
+made obsolete by these tests passing.
+
 ## Mock SAML IdP (`startMockSamlIdp`)
 
 `GET /sso` turns an HTTP-Redirect-bound `AuthnRequest` into an

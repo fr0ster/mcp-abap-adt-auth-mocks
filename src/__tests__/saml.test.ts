@@ -229,6 +229,13 @@ describe('mock SAML IdP', () => {
         'base64',
       ).toString('utf8');
       expect(secondXml).toContain(`ID="${firstId}"`);
+
+      // One-shot: repeatLastAssertion() was not called again, so a third
+      // delivery must mint a fresh ID rather than repeating firstId forever.
+      await visit(url);
+      const thirdId = idp.lastAssertionId();
+      expect(thirdId).toBeTruthy();
+      expect(thirdId).not.toBe(firstId);
     } finally {
       await idp.close();
       await acs.close();

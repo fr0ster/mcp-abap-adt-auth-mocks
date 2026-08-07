@@ -330,4 +330,62 @@ describe('mock UAA', () => {
       await uaa.close();
     }
   });
+
+  // The guard is in src/clients.ts and shared by both mocks, so this one case
+  // covers the OIDC mock too: presenting two disagreeing identities — one via
+  // the Authorization header, a different one in the body — must be refused
+  // rather than resolved by trusting whichever the header named.
+  // clientAuth.test.ts only proves readClientAuth *sets* conflict: true; this
+  // proves a caller *acts* on it.
+  it('refuses a client whose header and body identities disagree', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: 'irrelevant',
+          redirect_uri: 'http://localhost:61001/callback',
+          client_id: 'other-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(401);
+      const json = (await res.json()) as {
+        error: string;
+        error_description?: string;
+      };
+      expect(json.error).toBe('invalid_client');
+      expect(json.error_description).toMatch(/disagree/);
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // The OIDC twin is oidc.test.ts's 'refuses an authorize request with no
+  // redirect_uri at all'; this mock had no counterpart, and deleting
+  // uaa.ts:114-118 turns this into new URL(undefined) throwing, which the
+  // server core reports as a 500 mock_failure instead of a 400 invalid_request.
+  it('refuses an authorize request with no redirect_uri at all', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?${new URLSearchParams({
+          client_id: 'mock-client',
+          response_type: 'code',
+        }).toString()}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
 });
