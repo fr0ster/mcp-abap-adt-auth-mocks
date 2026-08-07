@@ -186,6 +186,29 @@ describe('mock SAML IdP', () => {
     }
   });
 
+  // Empty and absent are different messages. `RelayState=` is a value the
+  // client chose to send; omitting the parameter is not. Replace the
+  // `=== undefined` check with a truthy one and every other case stays green.
+  it('carries an empty RelayState, and omits the field when there was none', async () => {
+    const acs = await startAcs();
+    const idp = await startMockSamlIdp();
+    try {
+      const request = encodeURIComponent(authnRequest(`${acs.url}/callback`));
+
+      await visit(`${idp.url}/sso?SAMLRequest=${request}&RelayState=`);
+      expect(acs.received).toHaveLength(1);
+      expect(acs.received[0].RelayState).toBe('');
+
+      const without = await (
+        await fetch(`${idp.url}/sso?SAMLRequest=${request}`)
+      ).text();
+      expect(without).not.toContain('name="RelayState"');
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
   // Replay is a sequence: the same assertion, delivered twice. In isolation the
   // second delivery is valid, which is exactly why a verifier must remember.
   it('repeats a previous assertion ID on demand', async () => {
