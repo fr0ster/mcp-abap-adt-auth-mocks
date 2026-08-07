@@ -113,16 +113,6 @@ describe('an independent verifier judges the mock', () => {
     }
   }, 20000);
 
-  const rejected: SamlVariant[] = [
-    'unsigned',
-    'wrongKey',
-    'tamperedAfterSign',
-    'expired',
-    'notYetValid',
-    'wrongAudience',
-    'wrongInResponseTo',
-  ];
-
   /**
    * Why each variant must be rejected — not merely that it was.
    *
@@ -159,7 +149,13 @@ describe('an independent verifier judges the mock', () => {
     wrongInResponseTo: /InResponseTo is not valid/,
   };
 
-  for (const variant of rejected) {
+  // Derived from REASON, not iterated alongside it: a variant added to
+  // REASON without a real pattern cannot compile as a valid RegExp entry,
+  // and a variant that never gets a pattern here never gets a test either —
+  // there is no separate list to fall out of sync with it. `rejects.toThrow(undefined)`
+  // degrades to "throws anything", so keeping these two inseparable is what
+  // stops that degradation from being silent.
+  for (const variant of Object.keys(REASON) as SamlVariant[]) {
     it(`rejects ${variant}`, async () => {
       const s = await session(variant);
       try {
@@ -341,9 +337,15 @@ describe('an independent verifier judges the mock', () => {
 
       const another = await s.deliver();
       expect(s.idp.lastAssertionId()).not.toBe(firstId);
+      // Pinned like every other rejection in this file. Left bare, a
+      // signature-placement regression like the one this task already found
+      // once would throw "Invalid signature: Referenced node does not refer
+      // to it's parent element" here too, and `rejects.toThrow()` would still
+      // pass — this test would go on claiming the request-ID cache is
+      // one-shot while proving nothing of the kind.
       await expect(
         remembers.validatePostResponseAsync({ SAMLResponse: another }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/^InResponseTo is not valid$/);
     } finally {
       await s.close();
     }
