@@ -8,6 +8,7 @@
 
 export type { VisitResult } from './browser';
 export { visit } from './browser';
+export type { UaaClient } from './clients';
 export type { OidcOptions } from './oidc';
 export { startMockOidc } from './oidc';
 export type { MockSamlIdp, SamlOptions, SamlVariant } from './saml';

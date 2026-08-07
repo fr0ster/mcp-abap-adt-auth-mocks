@@ -69,7 +69,7 @@ try {
     }),
   });
 
-  const { accessToken } = await provider.getTokens();
+  const { authorizationToken } = await provider.getTokens();
 } finally {
   await uaa.close();
 }
@@ -185,12 +185,14 @@ source rather than assumed from its documentation:
   only in the code that *builds* an outgoing request, never in the code that
   *validates* an incoming response.
 - `statusFailure` and `wrongIssuer` — node-saml only reads the top-level
-  `<samlp:Status>` inside a branch that is unreachable once a validly-signed
-  `Assertion` is present, and only compares `idpIssuer` against the message
-  on the **logout** path (`verifyIssuer`, called from `verifyLogoutRequest`
-  / `verifyLogoutResponse`), never from `validatePostResponseAsync`. A
-  Responder-failure status or a forged issuer riding alongside an otherwise
-  valid, validly-signed assertion is accepted outright on this path.
+  `<samlp:Status>` inside the branch guarded by `if (!("Assertion" in
+  response))` — that is, whenever *any* `Assertion` element is present in
+  the response at all, signed or not, not specifically because it is
+  validly signed — and only compares `idpIssuer` against the message on the
+  **logout** path (`verifyIssuer`, called from `verifyLogoutRequest` /
+  `verifyLogoutResponse`), never from `validatePostResponseAsync`. A
+  Responder-failure status or a forged issuer riding alongside an Assertion
+  is accepted outright on this path.
 
 All four are asserted **structurally** instead (the corrupted field is
 present and differs from `valid`, and the verifier resolves rather than
