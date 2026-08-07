@@ -275,6 +275,68 @@ describe('mock UAA', () => {
     }
   });
 
+  // Every error redirect (missing response_type, wrong response_type,
+  // access_denied) and the success redirect all mirror state the same way —
+  // this pins the success and access_denied cases, since only the missing
+  // response_type case was covered before.
+  it('mirrors state on the success redirect', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback')}` +
+          '&state=st-success',
+        { redirect: 'manual' },
+      );
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('code')).toBeTruthy();
+      expect(location.searchParams.get('state')).toBe('st-success');
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  it('mirrors state on the access_denied redirect', async () => {
+    const uaa = await startMockUaa({ authorize: 'deny' });
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback')}` +
+          '&state=st-deny',
+        { redirect: 'manual' },
+      );
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('access_denied');
+      expect(location.searchParams.get('state')).toBe('st-deny');
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // OIDC mirrors on `incoming !== undefined`; until now UAA mirrored on
+  // truthiness (`if (req.query.state)`), so `state=` (present but empty) was
+  // silently dropped instead of mirrored — the same "empty is not absent"
+  // distinction the SAML RelayState work already settled. Regressing UAA back
+  // to a truthiness check makes this the case that catches it: the other
+  // state tests all use a non-empty value and cannot tell the two checks
+  // apart.
+  it('mirrors an empty state as empty, not absent', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback')}` +
+          '&state=',
+        { redirect: 'manual' },
+      );
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.has('state')).toBe(true);
+      expect(location.searchParams.get('state')).toBe('');
+    } finally {
+      await uaa.close();
+    }
+  });
+
   it('journals what the client sent', async () => {
     const uaa = await startMockUaa({
       clients: [
@@ -339,6 +401,82 @@ describe('mock UAA', () => {
         'http://localhost:5555/other-callback',
       );
       expect(code).toBeTruthy();
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // RFC 6749 §3.1.2.3 requires exact, byte-for-byte comparison against a
+  // registered value — never a prefix or origin match. Every other case in
+  // this suite either matches exactly or differs in *origin*
+  // (attacker.invalid), so none of them would catch a comparison relaxed to
+  // "same origin" or "starts with". These two are same-origin, same-scheme,
+  // registered client — differing only in path or trailing slash — which is
+  // exactly the shape a same-origin or prefix comparison would let through.
+  it('refuses a redirect_uri that shares the origin but not the path, against the default registration', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/evil')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  it('refuses the registered redirect_uri with a trailing slash appended', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback/')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // A registered list *replaces* the default, it does not extend it — a mock
+  // configured only for a client's real callback must not go on silently
+  // accepting DEFAULT_REDIRECT_URI too. createClientRegistry falls back to
+  // [DEFAULT_REDIRECT_URI] only when redirectUris is entirely absent
+  // (src/clients.ts:56); a registry that appended the default to whatever was
+  // declared would pass every other test in this file, since all of them
+  // either omit redirectUris or already include the URI they exercise.
+  it('refuses the default redirect_uri once a client is registered with a different one', async () => {
+    const uaa = await startMockUaa({
+      clients: [
+        {
+          clientId: 'mock-client',
+          clientSecret: 'mock-secret',
+          redirectUris: ['https://prod.example/cb'],
+        },
+      ],
+    });
+    try {
+      const res = await fetch(
+        `${uaa.url}/oauth/authorize?client_id=mock-client&response_type=code` +
+          `&redirect_uri=${encodeURIComponent('http://localhost:61001/callback')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(((await res.json()) as { error: string }).error).toBe(
+        'invalid_request',
+      );
     } finally {
       await uaa.close();
     }

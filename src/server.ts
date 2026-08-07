@@ -125,8 +125,18 @@ export async function startServer(
     // A bind failure (EADDRINUSE, EACCES, a sandbox denying the socket)
     // emits 'error' instead of calling back — subscribed only to the success
     // path, that error would be unhandled and crash the process rather than
-    // reject startServer()'s promise. Removed once listening succeeds so a
-    // later runtime error is not mistaken for a startup failure.
+    // reject startServer()'s promise.
+    //
+    // Removed once listening succeeds, and not just to avoid a stale
+    // "startup failure" label: `reject` on an already-settled promise is a
+    // silent no-op, not a second rejection. Left attached, this listener
+    // would still be the only 'error' subscriber on `server` for the rest of
+    // its life, so a genuine runtime error after startup — a socket reset, a
+    // malformed request Node itself rejects before a route ever sees it —
+    // would call that no-op `reject` instead of the loud, process-crashing
+    // default an EventEmitter gives an 'error' with no listener. Silently
+    // absorbing it is worse than either outcome: not visible in a test, and
+    // not visible in production either.
     const onError = (error: Error): void => reject(error);
     server.once('error', onError);
     server.listen(port, '127.0.0.1', () => {

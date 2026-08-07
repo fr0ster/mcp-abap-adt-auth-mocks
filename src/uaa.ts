@@ -129,26 +129,29 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
       // Past this line client_id and redirect_uri are both trusted, so every
       // remaining refusal is reported at the callback rather than answered
       // directly.
+      //
+      // `state`, present but empty (`state=`), and `state` absent altogether
+      // are different messages — the same distinction the SAML RelayState
+      // work settled — so this mirrors on `!== undefined`, not on truthiness.
       const mirrorState = (): void => {
-        if (req.query.state) target.searchParams.set('state', req.query.state);
+        if (req.query.state !== undefined)
+          target.searchParams.set('state', req.query.state);
+      };
+      // Wraps mirrorState() + sendRedirectError() in one call, the same shape
+      // as oidc.ts's redirectError, so every error redirect mirrors state
+      // structurally rather than by each call site remembering to.
+      const redirectError = (error: string, description: string): void => {
+        mirrorState();
+        sendRedirectError(res, target, error, description);
       };
 
       const responseType = req.query.response_type;
       if (responseType === undefined) {
-        mirrorState();
-        sendRedirectError(
-          res,
-          target,
-          'invalid_request',
-          'response_type is required',
-        );
+        redirectError('invalid_request', 'response_type is required');
         return;
       }
       if (responseType !== 'code') {
-        mirrorState();
-        sendRedirectError(
-          res,
-          target,
+        redirectError(
           'unsupported_response_type',
           `unsupported response_type: ${responseType}`,
         );
@@ -156,13 +159,7 @@ export async function startMockUaa(options: UaaOptions = {}): Promise<MockUaa> {
       }
 
       if (denies) {
-        mirrorState();
-        sendRedirectError(
-          res,
-          target,
-          'access_denied',
-          'the mock was told to deny',
-        );
+        redirectError('access_denied', 'the mock was told to deny');
         return;
       }
       const code = randomUUID();

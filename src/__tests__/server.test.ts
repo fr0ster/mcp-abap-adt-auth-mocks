@@ -48,13 +48,17 @@ describe('server core', () => {
   });
 
   // A listen() failure (EADDRINUSE here) used to emit an unhandled 'error'
-  // event instead of rejecting startServer()'s promise — which crashes the
-  // test runner rather than failing an assertion. If that regressed, this
-  // test would not merely fail: the process would not survive to report it.
+  // event instead of rejecting startServer()'s promise. Without the listener,
+  // the promise this test awaits never settles, so under Jest the test fails
+  // by timeout rather than by a red assertion — and a bare Node process
+  // (no test runner, no unhandled-rejection handler either) would go down
+  // instead of ever reaching the `await`. Either way the regression is
+  // caught; a reader who reverts the fix and sees this test time out should
+  // not conclude the test itself is broken.
   it('rejects startServer() when listen() fails, rather than crashing the process', async () => {
     const first = await startServer({});
     try {
-      await expect(startServer({}, first.port)).rejects.toThrow();
+      await expect(startServer({}, first.port)).rejects.toThrow(/EADDRINUSE/);
     } finally {
       await first.close();
     }

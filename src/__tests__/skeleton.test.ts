@@ -17,6 +17,13 @@ describe('package skeleton', () => {
     expect(Object.keys(mocks).length).toBeGreaterThan(0);
   });
 
+  // UaaClient is exported so a consumer can type `redirectUris`, but
+  // registering an extra URI *alongside* the default (rather than instead of
+  // it) means retyping the literal unless the default itself is exported too.
+  it('exports DEFAULT_REDIRECT_URI', () => {
+    expect(mocks.DEFAULT_REDIRECT_URI).toBe('http://localhost:61001/callback');
+  });
+
   // The package must never depend on the packages it exists to test: a mock
   // that knows our types will eventually agree with our mistakes. Both groups
   // are checked, not just runtime — a devDependency would let a test import our
