@@ -47,6 +47,19 @@ describe('server core', () => {
     }
   });
 
+  // A listen() failure (EADDRINUSE here) used to emit an unhandled 'error'
+  // event instead of rejecting startServer()'s promise — which crashes the
+  // test runner rather than failing an assertion. If that regressed, this
+  // test would not merely fail: the process would not survive to report it.
+  it('rejects startServer() when listen() fails, rather than crashing the process', async () => {
+    const first = await startServer({});
+    try {
+      await expect(startServer({}, first.port)).rejects.toThrow();
+    } finally {
+      await first.close();
+    }
+  });
+
   it('releases the port when closed', async () => {
     const s = await startServer({});
     const port = s.port;

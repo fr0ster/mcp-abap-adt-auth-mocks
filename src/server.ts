@@ -121,9 +121,19 @@ export async function startServer(
     socket.on('close', () => sockets.delete(socket));
   });
 
-  await new Promise<void>((resolve) =>
-    server.listen(port, '127.0.0.1', resolve),
-  );
+  await new Promise<void>((resolve, reject) => {
+    // A bind failure (EADDRINUSE, EACCES, a sandbox denying the socket)
+    // emits 'error' instead of calling back — subscribed only to the success
+    // path, that error would be unhandled and crash the process rather than
+    // reject startServer()'s promise. Removed once listening succeeds so a
+    // later runtime error is not mistaken for a startup failure.
+    const onError = (error: Error): void => reject(error);
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
   const bound = (server.address() as AddressInfo).port;
 
   return {
