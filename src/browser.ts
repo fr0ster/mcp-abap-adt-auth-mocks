@@ -63,9 +63,29 @@ function parseForm(
 
 export async function visit(url: string): Promise<VisitResult> {
   let current = url;
+  // Set only while a POST body is pending for the next hop — after
+  // submitting a form, or after a 307/308 that itself followed one. Every
+  // other 3xx (301, 302, 303) clears it, because a real browser repeats the
+  // method and body only for 307 and 308; every other redirect becomes a GET.
+  // Undefined here means the next hop is a plain GET, which is also what the
+  // very first request always is.
+  let pendingBody: string | undefined;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const res = await fetch(current, { redirect: 'manual' });
+    const res = await fetch(
+      current,
+      pendingBody === undefined
+        ? { redirect: 'manual' }
+        : {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: pendingBody,
+            // Manual, like every other fetch here. Left to its default the
+            // POST would follow a redirect on its own, outside the hop cap,
+            // and `finalUrl` below would still name the pre-redirect URL.
+            redirect: 'manual',
+          },
+    );
 
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
@@ -77,37 +97,18 @@ export async function visit(url: string): Promise<VisitResult> {
         };
       }
       current = new URL(location, current).toString();
+      if (res.status !== 307 && res.status !== 308) {
+        pendingBody = undefined;
+      }
       continue;
     }
 
     const body = await res.text();
     const form = parseForm(body, current);
     if (form) {
-      const posted = await fetch(form.action, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(form.fields).toString(),
-        // Manual, like every other fetch here. Left to its default the POST
-        // would follow a redirect on its own, outside the hop cap, and
-        // `finalUrl` below would still name the pre-redirect action.
-        redirect: 'manual',
-      });
-      if (posted.status >= 300 && posted.status < 400) {
-        const location = posted.headers.get('location');
-        if (location) {
-          // A browser keeps going after the POST, and an ACS commonly
-          // redirects once it has consumed the assertion. Rejoin the loop so
-          // the hop cap and finalUrl stay honest — the next hop is a GET,
-          // which is what a browser issues after a 302 or 303.
-          current = new URL(location, form.action).toString();
-          continue;
-        }
-      }
-      return {
-        finalUrl: form.action,
-        status: posted.status,
-        body: await posted.text(),
-      };
+      current = form.action;
+      pendingBody = new URLSearchParams(form.fields).toString();
+      continue;
     }
 
     return { finalUrl: current, status: res.status, body };

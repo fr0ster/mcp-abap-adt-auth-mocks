@@ -185,6 +185,68 @@ describe('visit', () => {
     }
   });
 
+  // RFC 7231 §6.4: only 307 and 308 tell a real browser to repeat the same
+  // method and body; every other redirect (301, 302, 303) becomes a GET. Both
+  // targets register both methods so the assertion is on which one actually
+  // arrived, not on a 404 that a wrong method would produce incidentally.
+  it('repeats the same POST body on a 307 after the form POST', async () => {
+    const s = await startServer({
+      'GET /idp': (_r, res) => {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(
+          `<html><body onload="document.forms[0].submit()">
+           <form method="post" action="/acs">
+             <input type="hidden" name="SAMLResponse" value="PHNhbWw+"/>
+           </form></body></html>`,
+        );
+      },
+      'POST /acs': (_r, res) => {
+        res.statusCode = 307;
+        res.setHeader('Location', '/acs2');
+        res.end();
+      },
+      'GET /acs2': (_r, res) => res.end('got-get'),
+      'POST /acs2': (req, res) => res.end(`got-post:${req.body.SAMLResponse}`),
+    });
+    try {
+      const result = await visit(`${s.url}/idp`);
+      expect(result.body).toBe('got-post:PHNhbWw+');
+      expect(result.finalUrl).toBe(`${s.url}/acs2`);
+      expect(result.status).toBe(200);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('follows a 303 after the form POST with a GET, not a repeated POST', async () => {
+    const s = await startServer({
+      'GET /idp': (_r, res) => {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(
+          `<html><body onload="document.forms[0].submit()">
+           <form method="post" action="/acs">
+             <input type="hidden" name="SAMLResponse" value="PHNhbWw+"/>
+           </form></body></html>`,
+        );
+      },
+      'POST /acs': (_r, res) => {
+        res.statusCode = 303;
+        res.setHeader('Location', '/done');
+        res.end();
+      },
+      'GET /done': (_r, res) => res.end('got-get'),
+      'POST /done': (_r, res) => res.end('got-post'),
+    });
+    try {
+      const result = await visit(`${s.url}/idp`);
+      expect(result.body).toBe('got-get');
+      expect(result.finalUrl).toBe(`${s.url}/done`);
+      expect(result.status).toBe(200);
+    } finally {
+      await s.close();
+    }
+  });
+
   it('stops rather than looping forever on a redirect cycle', async () => {
     const s = await startServer({
       'GET /loop': (_r, res) => {
