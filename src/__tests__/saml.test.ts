@@ -295,7 +295,11 @@ describe('mock SAML IdP', () => {
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
       );
       expect(res.status).toBe(400);
-      expect(await res.text()).toMatch(/AssertionConsumerServiceURL/);
+      // Exact fragment, not the bare `/AssertionConsumerServiceURL/` token:
+      // the no-registration and not-registered refusals below both name
+      // AssertionConsumerServiceURL too, so a bare token match stays green
+      // even after this specific check is deleted.
+      expect(await res.text()).toMatch(/missing AssertionConsumerServiceURL/);
     } finally {
       await idp.close();
     }
@@ -339,7 +343,12 @@ describe('mock SAML IdP', () => {
       );
       expect(res.status).toBe(400);
       const text = await res.text();
-      expect(text).toMatch(/AuthnRequest/);
+      // Exact fragment the document-element check produces, not the bare
+      // `/AuthnRequest/` token: every attribute refusal below also names
+      // AuthnRequest in its message, so a bare token match stays green even
+      // after the document-element check itself is deleted (this fixture
+      // has no Version, so it falls through to the Version refusal).
+      expect(text).toMatch(/expected the document element/);
       // Distinguishes this refusal from the other three: it parsed fine and
       // did carry AssertionConsumerServiceURL, so neither of those messages
       // is the right explanation.
@@ -367,7 +376,11 @@ describe('mock SAML IdP', () => {
       );
       expect(res.status).toBe(400);
       const text = await res.text();
-      expect(text).toMatch(/AuthnRequest/);
+      // Exact fragment, not the bare `/AuthnRequest/` token: this fixture
+      // has Version="2.0" but no IssueInstant, so once the document-element
+      // check is deleted it falls through to the IssueInstant refusal,
+      // whose message also contains the word "AuthnRequest".
+      expect(text).toMatch(/expected the document element/);
       expect(text).not.toMatch(/did not parse as XML/);
       expect(text).not.toMatch(/missing AssertionConsumerServiceURL/);
     } finally {
@@ -399,7 +412,11 @@ describe('mock SAML IdP', () => {
       );
       expect(res.status).toBe(400);
       const text = await res.text();
-      expect(text).toMatch(/AuthnRequest/);
+      // Exact fragment, not the bare `/AuthnRequest/` token: this fixture
+      // has Version="2.0" but no IssueInstant, so once the document-element
+      // check is deleted it falls through to the IssueInstant refusal,
+      // whose message also contains the word "AuthnRequest".
+      expect(text).toMatch(/expected the document element/);
       expect(text).not.toMatch(/did not parse as XML/);
       expect(text).not.toMatch(/missing AssertionConsumerServiceURL/);
     } finally {
@@ -609,6 +626,61 @@ describe('mock SAML IdP — AuthnRequest required attributes (SAML Core §3.2.1)
       const xml =
         `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
         `ID="_req1" Version="2.0" IssueInstant="not-a-date" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // Proves the XSD_DATE_TIME regex half of isValidIssueInstant specifically.
+  // "2026/08/11" is not the xsd:dateTime lexical form the regex requires,
+  // but `Date.parse('2026/08/11')` still succeeds — so a check that relied
+  // only on `!Number.isNaN(Date.parse(value))` would accept it. Only the
+  // regex catches this.
+  it('refuses an AuthnRequest whose IssueInstant is a parseable date in the wrong lexical form', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026/08/11" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // Proves the Date.parse half of isValidIssueInstant specifically, the
+  // mirror image of the test above. "2026-13-45T99:99:99Z" matches
+  // XSD_DATE_TIME's shape (digits in every position the regex requires) but
+  // names an impossible month, day and time, so `Date.parse` returns NaN —
+  // a check that relied only on the regex would accept it. Only the
+  // Date.parse guard catches this.
+  it('refuses an AuthnRequest whose IssueInstant has the right shape but names an impossible date', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-13-45T99:99:99Z" ` +
         `AssertionConsumerServiceURL="${acsUrl}"/>`;
       const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
         'base64',

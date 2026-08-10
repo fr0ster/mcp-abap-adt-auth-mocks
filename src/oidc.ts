@@ -175,7 +175,10 @@ export async function startMockOidc(
         );
         return;
       }
-      const scopes = scopeParam.split(' ').filter((s) => s.length > 0);
+      // Split on RFC 6749 §3.3's single-SP delimiter and matched by
+      // `.includes`, so extra whitespace producing empty tokens changes
+      // nothing about whether "openid" is a member — no filtering needed.
+      const scopes = scopeParam.split(' ');
       if (!scopes.includes('openid')) {
         redirectError(
           'invalid_scope',

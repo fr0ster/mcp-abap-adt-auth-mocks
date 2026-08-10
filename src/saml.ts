@@ -313,6 +313,14 @@ export async function startMockSamlIdp(
         return;
       }
       const issueInstant = root.getAttribute('IssueInstant');
+      // `!issueInstant ||` is not logically load-bearing: `getAttribute`
+      // returns `string | null`, and `XSD_DATE_TIME.test(null)` already
+      // evaluates to `false` (RegExp#test coerces its argument to the
+      // string "null"), so `isValidIssueInstant` would return `false` for a
+      // missing attribute on its own. It stays because `isValidIssueInstant`
+      // is typed to take `string`, not `string | null` — this is the
+      // narrowing TypeScript needs to allow the call at all, kept as a
+      // defensive/type guard rather than as a rule a test proves.
       if (!issueInstant || !isValidIssueInstant(issueInstant)) {
         res.statusCode = 400;
         res.end(

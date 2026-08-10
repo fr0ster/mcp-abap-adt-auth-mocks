@@ -812,10 +812,10 @@ describe('mock OIDC', () => {
 
   // RFC 6749 §4.1.2.1: this falls after the trust boundary (client_id and
   // redirect_uri are already valid), so — like the two PKCE refusals above —
-  // it is reported at the callback rather than answered directly. PKCE
-  // parameters are included so that, were the response_type check deleted,
-  // the request would fall through and receive a code instead of merely
-  // hitting a different refusal.
+  // it is reported at the callback rather than answered directly. This URL
+  // carries no `scope`, so were the response_type check deleted the request
+  // would still be stopped — by the scope guard instead — rather than
+  // falling all the way through to a code.
   it('refuses an authorize request with no response_type, at the callback', async () => {
     const oidc = await startMockOidc();
     try {
