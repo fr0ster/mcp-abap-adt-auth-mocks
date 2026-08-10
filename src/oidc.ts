@@ -6,7 +6,11 @@
  * PKCE is demanded at both ends. `/authorize` refuses a request with no
  * `code_challenge`, no `code_challenge_method`, or a method other than
  * `S256` — verifying a challenge only when one happens to arrive would let a
- * non-PKCE request through while still satisfying the exchange rule.
+ * non-PKCE request through while still satisfying the exchange rule. Both
+ * `code_challenge` and `code_verifier` are also checked against RFC 7636's
+ * `43*128unreserved` shape before anything is hashed or compared — a
+ * verifier a real server would refuse for its shape must not exchange a
+ * code here either.
  *
  * `state` is mirrored, never judged. Validating `state` is the client's duty,
  * and a mock that checked it would be doing the client's job while hiding
@@ -51,6 +55,20 @@ interface IssuedCode {
   challenge: string;
   issuedAt: number;
   used: boolean;
+}
+
+/**
+ * RFC 7636 §4.1 and §4.2 give `code_verifier` and `code_challenge` the same
+ * shape: `43*128unreserved`, where `unreserved = ALPHA / DIGIT / "-" / "."
+ * / "_" / "~"`. The length floor is what carries the security property — a
+ * verifier a real server would refuse for being too short (or too long, or
+ * outside the character class) must not be allowed to exchange a code here
+ * either. One predicate serves both parameters so the character class is
+ * written once rather than drifting between the two call sites.
+ */
+const PKCE_SHAPE = /^[A-Za-z0-9\-._~]{43,128}$/;
+function hasPkceShape(value: string): boolean {
+  return PKCE_SHAPE.test(value);
 }
 
 export async function startMockOidc(
@@ -145,6 +163,13 @@ export async function startMockOidc(
         );
         return;
       }
+      if (!hasPkceShape(challenge)) {
+        redirectError(
+          'invalid_request',
+          'code_challenge must be 43-128 characters from the RFC 7636 §4.2 unreserved set (ALPHA / DIGIT / "-" / "." / "_" / "~")',
+        );
+        return;
+      }
 
       const code = randomUUID();
       codes.set(code, {
@@ -192,6 +217,20 @@ export async function startMockOidc(
         return;
 
       const verifier = req.body.code_verifier ?? '';
+      // The shape check comes first and refuses as invalid_request: a
+      // verifier RFC 7636 §4.1 forbids (too short, too long, or outside the
+      // unreserved character class) is a malformed request, not a failed
+      // proof-of-possession. Only a well-formed verifier reaches the hash
+      // comparison below, which is the separate question of whether it
+      // derives the stored challenge.
+      if (!hasPkceShape(verifier)) {
+        sendOAuthError(
+          res,
+          'invalid_request',
+          'code_verifier must be 43-128 characters from the RFC 7636 §4.1 unreserved set (ALPHA / DIGIT / "-" / "." / "_" / "~")',
+        );
+        return;
+      }
       const derived = createHash('sha256').update(verifier).digest('base64url');
       if (derived !== issued.challenge) {
         sendOAuthError(

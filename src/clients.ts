@@ -158,8 +158,9 @@ export function sendRedirectError(
 }
 
 /**
- * Authenticates the caller against the registry: reads the credentials, rejects
- * a header/body disagreement, and checks the secret.
+ * Authenticates the caller against the registry: reads the credentials,
+ * rejects more than one authentication method or a header/body client_id
+ * disagreement (see `ClientAuth.conflict`), and checks the secret.
  *
  * Returns null when it has already answered, meaning the caller must stop.
  * Otherwise returns both the registered client and the credentials as read —
@@ -174,9 +175,12 @@ export function authenticateClient(
 ): { auth: ClientAuth; client: UaaClient } | null {
   const auth = readClientAuth(req);
   if (auth.conflict) {
-    sendOAuthError(res, 'invalid_client', 'header and body disagree', {
-      usedAuthorizationHeader: auth.usedAuthorizationHeader,
-    });
+    sendOAuthError(
+      res,
+      'invalid_client',
+      'more than one client authentication method was used (RFC 6749 §2.3), or the body client_id disagrees with the Authorization header',
+      { usedAuthorizationHeader: auth.usedAuthorizationHeader },
+    );
     return null;
   }
   const client = registry.find(auth.clientId);

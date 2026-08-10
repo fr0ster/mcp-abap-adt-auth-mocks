@@ -110,7 +110,13 @@ describe('mock OIDC', () => {
     }
   });
 
-  it('exchanges a code when the verifier matches the challenge', async () => {
+  // Also proves the RFC 6749 §2.3/§3.2.1 judgement call in clientAuth.ts:
+  // this request presents Basic *and* a body client_id — exactly the shape
+  // the family's own OIDC client sends for every confidential-client token
+  // request — and must still succeed, because a body client_id that merely
+  // identifies the client agreeing with Basic is not a second authentication
+  // method.
+  it('exchanges a code when the verifier matches the challenge (Basic plus an agreeing body client_id)', async () => {
     const oidc = await startMockOidc();
     try {
       const { verifier, challenge } = pkce();
@@ -144,6 +150,50 @@ describe('mock OIDC', () => {
     }
   });
 
+  // The other half of the same judgement call, exercised end-to-end: a body
+  // client_secret is itself a credential, so presenting it alongside Basic
+  // is two authentication methods in the same request — refused even though
+  // every value agrees with what Basic carries.
+  it('refuses a token request presenting both Basic and a body client_secret, even when they agree', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { verifier, challenge } = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_verifier: verifier,
+          client_id: 'mock-client',
+          client_secret: 'mock-secret',
+        }).toString(),
+      });
+      // invalid_client via the Authorization header answers 401 per RFC
+      // 6749 §5.2 — see oauthErrors.ts — not the 400 every other refusal in
+      // this file uses.
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('invalid_client');
+    } finally {
+      await oidc.close();
+    }
+  });
+
   it('refuses a verifier that does not derive the challenge', async () => {
     const oidc = await startMockOidc();
     try {
@@ -169,14 +219,134 @@ describe('mock OIDC', () => {
           grant_type: 'authorization_code',
           code: code ?? '',
           redirect_uri: 'http://localhost:61001/callback',
+          // Well-formed per RFC 7636 §4.1 (43 chars, base64url alphabet is a
+          // subset of unreserved) — this must fail for deriving the wrong
+          // challenge, not for its shape, which is what distinguishes this
+          // case from the two below.
           code_verifier: other.verifier,
           client_id: 'mock-client',
         }).toString(),
       });
       expect(res.status).toBe(400);
-      expect(((await res.json()) as { error: string }).error).toBe(
-        'invalid_grant',
+      const body = (await res.json()) as {
+        error: string;
+        error_description: string;
+      };
+      expect(body.error).toBe('invalid_grant');
+      expect(body.error_description).toMatch(/does not derive/);
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // RFC 7636 §4.1: code_verifier = 43*128unreserved. A 1-character verifier
+  // violates the length floor that carries PKCE's security property, and
+  // must be refused before the hash comparison even runs — a real server
+  // would never accept it, so this mock accepting it would teach a consumer
+  // a mistake that only surfaces against the real thing.
+  it('refuses a code_verifier that is too short to be RFC 7636 shape-valid', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
       );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_verifier: 'x',
+          client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        error_description: string;
+      };
+      expect(body.error).toBe('invalid_request');
+      expect(body.error_description).toMatch(/43-128/);
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The character-class half of the same shape rule: 43 characters, but
+  // every one of them is outside RFC 7636's unreserved set. Long enough to
+  // clear the length floor, so this proves the charset check independently
+  // of the length check above.
+  it('refuses a code_verifier containing a character outside the unreserved set', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_verifier: '!'.repeat(43),
+          client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        error_description: string;
+      };
+      expect(body.error).toBe('invalid_request');
+      expect(body.error_description).toMatch(/43-128/);
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // §4.2 gives code_challenge the same shape as code_verifier. Checked at
+  // /authorize, so — like the PKCE-required and method-mismatch refusals
+  // above it — it is reported at the callback rather than answered
+  // directly.
+  it('refuses a code_challenge that violates the RFC 7636 shape, at the callback', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: 'too-short',
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('invalid_request');
+      expect(location.searchParams.get('error_description')).toMatch(/43-128/);
+      expect(location.searchParams.get('code')).toBeNull();
     } finally {
       await oidc.close();
     }

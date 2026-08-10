@@ -13,7 +13,22 @@ export interface ClientAuth {
   clientSecret?: string;
   /** True when credentials arrived in the Authorization header. */
   usedAuthorizationHeader: boolean;
-  /** True when header and body both carry a client_id and they disagree. */
+  /**
+   * True when the request uses more than one authentication method (RFC
+   * 6749 §2.3: "The client MUST NOT use more than one authentication method
+   * in each request"), or when a body `client_id` disagrees with the one
+   * decoded from Basic.
+   *
+   * A body `client_id` that merely *agrees* with Basic is neither: RFC 6749
+   * §3.2.1 says "a client MAY use the 'client_id' request parameter to
+   * identify itself when sending requests to the token endpoint", and a
+   * bare, agreeing `client_id` authenticates nothing an attacker could not
+   * already read off the Basic header — it is identification, not a second
+   * credential. A body `client_secret` is different: it is itself a
+   * credential, so presenting it alongside Basic is two authentication
+   * methods in the same request and is refused even when the two secrets
+   * happen to match.
+   */
   conflict: boolean;
 }
 
@@ -50,12 +65,20 @@ export function readClientAuth(req: RecordedRequest): ClientAuth {
 
   const bodyId = req.body.client_id;
   const bodySecret = req.body.client_secret;
+  const usedAuthorizationHeader = basicId !== undefined;
 
   return {
     clientId: basicId ?? bodyId,
     clientSecret: basicSecret ?? bodySecret,
-    usedAuthorizationHeader: basicId !== undefined,
+    usedAuthorizationHeader,
+    // Two authentication methods: Basic plus a body client_secret, whether
+    // or not it agrees with the Basic secret. Or one method presented
+    // inconsistently: a body client_id that disagrees with Basic's. A body
+    // client_id that merely agrees with Basic is neither — see the
+    // `conflict` doc comment above.
     conflict:
-      basicId !== undefined && bodyId !== undefined && basicId !== bodyId,
+      usedAuthorizationHeader &&
+      ((bodyId !== undefined && bodyId !== basicId) ||
+        bodySecret !== undefined),
   };
 }

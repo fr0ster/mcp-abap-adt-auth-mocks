@@ -313,6 +313,60 @@ describe('mock SAML IdP', () => {
       await idp.close();
     }
   });
+
+  // The same reasoning as uaa.ts's rejectNonAssertion (RFC 7522 §2.1): what
+  // matters is the document element, not whether the attributes this
+  // handler reads happen to appear somewhere in the document.
+  // `<hello AssertionConsumerServiceURL="…" ID="_x"/>` parses fine and
+  // carries both, so a check that stopped at "did the attributes decode"
+  // would build a full signed response for it.
+  it('refuses well-formed XML whose document element is not an AuthnRequest', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const xml = `<hello AssertionConsumerServiceURL="http://127.0.0.1:1/cb" ID="_x"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      const text = await res.text();
+      expect(text).toMatch(/AuthnRequest/);
+      // Distinguishes this refusal from the other three: it parsed fine and
+      // did carry AssertionConsumerServiceURL, so neither of those messages
+      // is the right explanation.
+      expect(text).not.toMatch(/did not parse as XML/);
+      expect(text).not.toMatch(/missing AssertionConsumerServiceURL/);
+    } finally {
+      await idp.close();
+    }
+  });
+
+  // Proves the namespace half specifically: the local name is exactly
+  // "AuthnRequest", so a check that only compared `localName` would accept
+  // this. Only requiring the SAML protocol namespace too catches it.
+  it('refuses an AuthnRequest local name in the wrong namespace', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:example:not-saml" ` +
+        `ID="_req1" Version="2.0" AssertionConsumerServiceURL="http://127.0.0.1:1/cb"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      const text = await res.text();
+      expect(text).toMatch(/AuthnRequest/);
+      expect(text).not.toMatch(/did not parse as XML/);
+      expect(text).not.toMatch(/missing AssertionConsumerServiceURL/);
+    } finally {
+      await idp.close();
+    }
+  });
 });
 
 /**

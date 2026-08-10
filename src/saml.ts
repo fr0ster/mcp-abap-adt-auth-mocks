@@ -49,6 +49,7 @@ export interface MockSamlIdp extends MockHandle {
   repeatLastAssertion(): void;
 }
 
+const SAML_PROTOCOL_NS = 'urn:oasis:names:tc:SAML:2.0:protocol';
 const STATUS_SUCCESS = 'urn:oasis:names:tc:SAML:2.0:status:Success';
 const STATUS_RESPONDER_FAILURE = 'urn:oasis:names:tc:SAML:2.0:status:Responder';
 const WRONG_ENDPOINT = 'http://127.0.0.1:1/other';
@@ -239,6 +240,27 @@ export async function startMockSamlIdp(
       if (!root) {
         res.statusCode = 400;
         res.end('AuthnRequest did not parse as XML');
+        return;
+      }
+      // The same reasoning as uaa.ts's rejectNonAssertion: what matters is
+      // the *document element*, not whether the right attributes appear
+      // somewhere in the document. `<hello AssertionConsumerServiceURL="…"
+      // ID="_x"/>` parses fine and carries both attributes this handler
+      // reads, so a check that stopped at "did the attributes decode" would
+      // accept it. A local-name-only check is not enough either — the
+      // namespace half is what a forged or mistranslated request is most
+      // likely to get wrong while still spelling the tag "AuthnRequest".
+      if (
+        root.localName !== 'AuthnRequest' ||
+        root.namespaceURI !== SAML_PROTOCOL_NS
+      ) {
+        res.statusCode = 400;
+        const seen = root.namespaceURI
+          ? `{${root.namespaceURI}}${root.localName}`
+          : (root.localName ?? 'an unnamed element');
+        res.end(
+          `expected the document element to be AuthnRequest in ${SAML_PROTOCOL_NS}, got ${seen}`,
+        );
         return;
       }
       const acsUrl =
