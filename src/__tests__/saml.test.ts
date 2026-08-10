@@ -367,6 +367,38 @@ describe('mock SAML IdP', () => {
       await idp.close();
     }
   });
+
+  // Proves the local-name half specifically, the mirror image of the test
+  // above. This document element sits in the *real* SAML protocol
+  // namespace and carries both AssertionConsumerServiceURL and ID — a
+  // check that only compared `namespaceURI` would accept it. A
+  // `samlp:LogoutRequest` is exactly the kind of correctly-namespaced,
+  // wrongly-named request a whole-`if`-disabled mutation proof cannot
+  // distinguish from `<hello>`: `<hello>` also fails the namespace half
+  // (its namespaceURI is null), so deleting only the local-name comparison
+  // leaves that test green. Only a same-namespace, different-name document
+  // element exposes it.
+  it('refuses a correctly namespaced document element that is not an AuthnRequest', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const xml =
+        `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" AssertionConsumerServiceURL="http://127.0.0.1:1/cb"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      const text = await res.text();
+      expect(text).toMatch(/AuthnRequest/);
+      expect(text).not.toMatch(/did not parse as XML/);
+      expect(text).not.toMatch(/missing AssertionConsumerServiceURL/);
+    } finally {
+      await idp.close();
+    }
+  });
 });
 
 /**

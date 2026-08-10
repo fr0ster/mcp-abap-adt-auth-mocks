@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `startMockOidc`'s `/token` now rejects a `code_verifier` that does not fit
+  RFC 7636's `43*128unreserved` shape, refused as `invalid_request` before
+  the hash comparison even runs — distinct from `invalid_grant`, which a
+  well-formed verifier that simply does not derive the stored
+  `code_challenge` still receives. `/authorize` applies the same shape check
+  to `code_challenge` per RFC 7636 §4.2.
+- Every mock now refuses a token request that presents two client
+  authentication methods at once (RFC 6749 §2.3): an `Authorization: Basic`
+  header together with a body `client_secret`, or a body `client_id` that
+  disagrees with the one Basic carries — even when every value agrees. A
+  bare, agreeing body `client_id` alongside Basic is still permitted (RFC
+  6749 §3.2.1: identification, not authentication), which is also the shape
+  `@mcp-abap-adt/auth-providers`' own OIDC client sends on every
+  confidential-client token request.
+- `startMockSamlIdp`'s `GET /sso` now requires the inflated request's
+  document element to be `AuthnRequest` in the SAML protocol namespace —
+  both the local name and the namespace — refusing anything else with a
+  `400`, the same reasoning the SAML bearer grant's assertion check already
+  applies.
+
 ## [0.1.0] - 2026-08-07
 
 First release. Protocol-faithful mock authorization servers — UAA/OAuth2,

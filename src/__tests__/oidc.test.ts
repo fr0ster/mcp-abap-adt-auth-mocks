@@ -187,8 +187,19 @@ describe('mock OIDC', () => {
       // 6749 §5.2 — see oauthErrors.ts — not the 400 every other refusal in
       // this file uses.
       expect(res.status).toBe(401);
-      const body = (await res.json()) as { error: string };
+      const body = (await res.json()) as {
+        error: string;
+        error_description: string;
+      };
       expect(body.error).toBe('invalid_client');
+      // clients.ts's "unknown client" refusal (an unregistered client_id or
+      // a wrong secret) produces the identical 401 + invalid_client, so the
+      // description is what pins *which* invalid_client this is — the same
+      // reasoning the derive-mismatch test above already applies to
+      // error_description.
+      expect(body.error_description).toMatch(
+        /more than one client authentication method/,
+      );
     } finally {
       await oidc.close();
     }
@@ -284,6 +295,54 @@ describe('mock OIDC', () => {
     }
   });
 
+  // Pins a decision, not an accident: `req.body.code_verifier ?? ''` means
+  // an absent code_verifier now fails the shape check (empty string is
+  // shorter than the 43-character floor) and answers invalid_request,
+  // where before the shape check existed it would have reached the hash
+  // comparison and answered invalid_grant / "does not derive". RFC 6749
+  // §5.2 treats a missing required parameter as invalid_request, so this is
+  // the more defensible answer — but nothing asserted either behaviour
+  // before or after this file's PKCE-shape change, so this case exists to
+  // make it a decision rather than an accident of `?? ''`.
+  it('refuses a token request with no code_verifier at all, as invalid_request', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        error_description: string;
+      };
+      expect(body.error).toBe('invalid_request');
+      expect(body.error_description).toMatch(/43-128/);
+    } finally {
+      await oidc.close();
+    }
+  });
+
   // The character-class half of the same shape rule: 43 characters, but
   // every one of them is outside RFC 7636's unreserved set. Long enough to
   // clear the length floor, so this proves the charset check independently
@@ -328,6 +387,54 @@ describe('mock OIDC', () => {
     }
   });
 
+  // The ceiling half of the same shape rule, mirroring the code_challenge
+  // case below. No fixture in this suite reaches 128 characters, so a
+  // regex whose upper bound was silently dropped would leave every other
+  // /token test green. 129 characters, all from the unreserved set,
+  // isolates the ceiling from the character class and from the derive
+  // check — the code was issued against a real challenge, so a verifier
+  // this long could otherwise reach the hash comparison and be judged on
+  // whether it derives, not on its shape.
+  it('refuses a code_verifier one character past the RFC 7636 128-character ceiling', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const redirected = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      const code = new URL(
+        redirected.headers.get('location') ?? '',
+      ).searchParams.get('code');
+      const res = await fetch(`${oidc.url}/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: basic('mock-client', 'mock-secret'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code ?? '',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_verifier: 'a'.repeat(129),
+          client_id: 'mock-client',
+        }).toString(),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        error_description: string;
+      };
+      expect(body.error).toBe('invalid_request');
+      expect(body.error_description).toMatch(/43-128/);
+    } finally {
+      await oidc.close();
+    }
+  });
+
   // §4.2 gives code_challenge the same shape as code_verifier. Checked at
   // /authorize, so — like the PKCE-required and method-mismatch refusals
   // above it — it is reported at the callback rather than answered
@@ -338,6 +445,32 @@ describe('mock OIDC', () => {
       const res = await fetch(
         authorizeUrl(oidc.url, {
           code_challenge: 'too-short',
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('invalid_request');
+      expect(location.searchParams.get('error_description')).toMatch(/43-128/);
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The other end of the shape rule: RFC 7636 gives code_challenge a ceiling
+  // as well as a floor. No fixture anywhere in this suite reaches 128
+  // characters, so a regex whose upper bound was silently dropped (`{43,128}`
+  // loosened to `{43,}`) would leave every other test green. 129 characters,
+  // all from the unreserved set, isolates the ceiling from the character
+  // class.
+  it('refuses a code_challenge one character past the RFC 7636 128-character ceiling', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          code_challenge: 'a'.repeat(129),
           code_challenge_method: 'S256',
         }),
         { redirect: 'manual' },

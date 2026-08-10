@@ -111,6 +111,24 @@ wrote the mistake:
   arrived via the `Authorization` header and a `400` when they arrived in the
   body, matching RFC 6749 §5.2 exactly rather than always answering one or
   the other.
+- **Presenting two client authentication methods in one request** is refused
+  as `invalid_client` too (RFC 6749 §2.3: "The client MUST NOT use more than
+  one authentication method in each request"): an `Authorization: Basic`
+  header together with a body `client_secret`, or a body `client_id` that
+  disagrees with the one Basic carries — refused even when every value
+  agrees, because a body `client_secret` is itself a credential and
+  presenting it alongside Basic is two credentials regardless of whether
+  they match. A bare, *agreeing* body `client_id` alongside Basic **is**
+  permitted: RFC 6749 §3.2.1 lets a client "use the `client_id` request
+  parameter to identify itself when sending requests to the token
+  endpoint", and identification is not authentication — an agreeing
+  `client_id` tells the server nothing an attacker could not already read
+  off the Basic header. This is also the shape
+  `@mcp-abap-adt/auth-providers`' own OIDC client sends on every
+  confidential-client token request (`client_id` always in the body, Basic
+  added whenever a secret exists), so a mock that refused it would refuse
+  its own family's real traffic. Implemented once in `src/clientAuth.ts`,
+  shared by both mocks.
 - **A code or a refresh token is bound to the client it was issued to.**
   Register two clients and try to redeem the first client's code, or its
   refresh token, while authenticated as the second, and the mock answers
@@ -122,12 +140,21 @@ wrote the mistake:
   **`redirect_uri`** that does not match the one used to request the code.
 - **The OIDC mock demands PKCE.** `/authorize` refuses a request with no
   `code_challenge`, no `code_challenge_method`, or a method other than
-  `S256`. `/token` then verifies the presented `code_verifier` derives the
-  challenge. `state` is mirrored back unchanged by default, never judged —
-  validating `state` is the client's job, and a mock that checked it would
-  hide whether the client does. `startMockOidc({ state: 'wrongState' })` and
-  `{ state: 'missingState' }` exist to test that the client notices when a
-  server does not behave.
+  `S256`. Both `code_challenge` (at `/authorize`, per RFC 7636 §4.2) and
+  `code_verifier` (at `/token`, per §4.1) are also checked against RFC
+  7636's `43*128unreserved` shape before anything is hashed or compared —
+  `43` to `128` characters from `ALPHA / DIGIT / "-" / "." / "_" / "~"`. The
+  two refusals a malformed or non-deriving verifier can get are different
+  and mean different things: a value that does not fit the shape is refused
+  as `invalid_request` — a malformed request, refused before the hash is
+  even computed — while a well-formed value that simply does not derive the
+  stored challenge is refused as `invalid_grant`, the existing
+  proof-of-possession failure. `/token` then verifies the presented
+  `code_verifier` derives the challenge. `state` is mirrored back unchanged
+  by default, never judged — validating `state` is the client's job, and a
+  mock that checked it would hide whether the client does.
+  `startMockOidc({ state: 'wrongState' })` and `{ state: 'missingState' }`
+  exist to test that the client notices when a server does not behave.
 - **Refresh tokens rotate by default** (`rotateRefreshTokens: true`): each
   refresh exchange invalidates the presented token and issues a new one, and
   presenting an already-superseded token is refused as reuse — configurable
@@ -181,6 +208,16 @@ per-instance, in-memory key pair and certificate (`generateKeyMaterial`,
 `signXml`, `certificatePem` on the handle). It never posts to the ACS
 itself — only a browser, or `visit()` standing in for one, does that; see
 [Quick start](#quick-start-visit-and-the-openurl-seam) above.
+
+Strict by default here too: the inflated request's document element must be
+`AuthnRequest` in the `urn:oasis:names:tc:SAML:2.0:protocol` namespace — both
+the local name and the namespace, not either alone — or `/sso` refuses it
+with a `400`. The same reasoning the RFC 7522 assertion check already
+applies to the SAML bearer grant (`uaa.ts`'s `rejectNonAssertion`): what
+matters is the *document element*, not whether the attributes this handler
+reads happen to decode somewhere in the document. A `samlp:LogoutRequest`
+correctly namespaced but wrongly named, or a document in the right shape but
+the wrong namespace, are both refused.
 
 ### Corruption variants
 

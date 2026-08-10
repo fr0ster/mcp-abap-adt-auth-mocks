@@ -68,9 +68,10 @@ describe('readClientAuth', () => {
   // identification, not a second credential — so this is not the "more than
   // one authentication method" §2.3 forbids. This is also the shape the
   // family's own OIDC client sends for every confidential-client token
-  // request (see oidc.ts's `exchangeAuthorizationCode`): client_id always in
-  // the body, Basic added whenever a secret exists. A mock that refused this
-  // would refuse its own family's real traffic.
+  // request (see `@mcp-abap-adt/auth-providers`' `exchangeAuthorizationCode`
+  // in its `src/auth/oidcToken.ts`): client_id always in the body, Basic
+  // added whenever a secret exists. A mock that refused this would refuse
+  // its own family's real traffic.
   it('does not flag a conflict when a body client_id merely identifies the same client as Basic', () => {
     const basic = Buffer.from('cid:secret').toString('base64');
     const r = readClientAuth({
