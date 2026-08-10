@@ -28,6 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both the local name and the namespace — refusing anything else with a
   `400`, the same reasoning the SAML bearer grant's assertion check already
   applies.
+- `startMockOidc`'s `/authorize` now requires `scope` to include `openid`
+  (OIDC Core §3.1.2.1), tokenised on the RFC 6749 §3.3 single-`SP`
+  delimiter and matched as a whole token — `scope=openidx` does not
+  satisfy it. Checked after the trust boundary, so refused **at the
+  callback** as `invalid_scope`, mirroring `state`, the same shape as the
+  existing `response_type` and PKCE refusals.
+- `SamlOptions` gains `acsUrls?: string[]`, the SAML twin of
+  `UaaClient.redirectUris`. `startMockSamlIdp`'s `GET /sso` now refuses an
+  `AuthnRequest` whose `AssertionConsumerServiceURL` is not registered in
+  `acsUrls`, by exact byte-for-byte match — never origin or prefix. There
+  is no default: omitting `acsUrls` entirely refuses **every**
+  `AuthnRequest` with a `400`, since an IdP with no service-provider
+  metadata has no relying party to deliver to. **Breaking**: every existing
+  call to `startMockSamlIdp` that expects a delivered assertion must now
+  pass `acsUrls` naming its ACS.
+- `startMockSamlIdp`'s `GET /sso` now requires the inflated `AuthnRequest`
+  to carry a non-empty `ID`, `Version` exactly `"2.0"`, and an
+  `IssueInstant` that parses as an `xsd:dateTime` (SAML Core §3.2.1,
+  `RequestAbstractType`), refusing anything else with a `400` naming the
+  missing or invalid attribute. Previously a missing `ID` silently became
+  an empty `InResponseTo` rather than being refused. **Breaking**: an
+  `AuthnRequest` built without `IssueInstant` (or with a missing `ID` or a
+  `Version` other than `"2.0"`) is now refused instead of answered.
 
 ## [0.1.0] - 2026-08-07
 

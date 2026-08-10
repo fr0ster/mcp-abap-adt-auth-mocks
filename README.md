@@ -155,6 +155,19 @@ wrote the mistake:
   mock that checked it would hide whether the client does.
   `startMockOidc({ state: 'wrongState' })` and `{ state: 'missingState' }`
   exist to test that the client notices when a server does not behave.
+- **The OIDC mock demands `scope=openid`.** OIDC Core §3.1.2.1 makes
+  `openid` a required member of `scope` — without it a request is a plain
+  OAuth request, not an OIDC one, and a consumer that stopped sending it
+  would otherwise pass silently against a mock that advertises OIDC
+  discovery. Checked after the trust boundary, so — like `response_type`
+  and PKCE — refused **at the callback** as `invalid_scope`: RFC 6749
+  §4.1.2.1 defines `invalid_scope` as "the requested scope is invalid,
+  unknown, or malformed," which is exactly this failure, and reusing
+  `invalid_request` would make a scope problem indistinguishable from a
+  structurally malformed request. `scope` is tokenised on RFC 6749 §3.3's
+  single-`SP` delimiter and matched as a whole token — `scope=openidx` is
+  refused, not accepted by a substring check that would wrongly see
+  `openid` inside it.
 - **Refresh tokens rotate by default** (`rotateRefreshTokens: true`): each
   refresh exchange invalidates the presented token and issues a new one, and
   presenting an already-superseded token is refused as reuse — configurable
@@ -165,6 +178,22 @@ wrote the mistake:
   default), `'lenient'`, or `'off'` — see
   [RFC 7522 and `samlBearer: 'strict'`](#rfc-7522-and-samlbearer-strict)
   below.
+- **The SAML IdP trusts a registered ACS, never whatever the request
+  names.** `SamlOptions.acsUrls` is the SAML twin of `UaaClient.redirectUris`
+  above, checked the same way: an `AuthnRequest`'s
+  `AssertionConsumerServiceURL` must match one of `acsUrls` **exactly**,
+  byte-for-byte — never by origin or prefix. There is no fixed default,
+  because every test's ACS runs on an ephemeral port; omitting `acsUrls`
+  entirely refuses **every** `AuthnRequest` with a `400`, the faithful
+  model for an IdP with no service-provider metadata at all. Without this
+  check a forged `AuthnRequest` could aim a signed assertion at an
+  attacker-controlled URL. See
+  [Mock SAML IdP](#mock-saml-idp-startmocksamlidp) below.
+- **An `AuthnRequest` must carry `ID`, `Version="2.0"` and a valid
+  `IssueInstant`.** SAML Core §3.2.1 makes all three required on
+  `RequestAbstractType`; `/sso` now refuses a request missing any of them
+  with a `400` naming which one, rather than silently treating a missing
+  `ID` as an empty `InResponseTo`.
 
 ## Mock UAA (`startMockUaa`)
 
@@ -179,11 +208,12 @@ otherwise need to hand-craft a JWT or run a code flow and wait.
 ## Mock OIDC (`startMockOidc`)
 
 Discovery at `GET /.well-known/openid-configuration`, PKCE demanded at
-`/authorize` and verified at `/token`, `state` mirrored (or deliberately
-corrupted, see above). Client and redirect_uri binding, client
-authentication, and the shape of a callback-reported error are the same
-functions the UAA mock uses, from `src/clients.ts` — not a second,
-independently-written copy that could quietly disagree.
+`/authorize` and verified at `/token`, `scope` required to include `openid`,
+`state` mirrored (or deliberately corrupted, see above). Client and
+redirect_uri binding, client authentication, and the shape of a
+callback-reported error are the same functions the UAA mock uses, from
+`src/clients.ts` — not a second, independently-written copy that could
+quietly disagree.
 
 ### What this does and does not prove
 
@@ -218,6 +248,34 @@ matters is the *document element*, not whether the attributes this handler
 reads happen to decode somewhere in the document. A `samlp:LogoutRequest`
 correctly namespaced but wrongly named, or a document in the right shape but
 the wrong namespace, are both refused.
+
+Once the document element checks out, three more rules apply, in order:
+
+1. **`ID`, `Version` and `IssueInstant` are required** (SAML Core §3.2.1,
+   `RequestAbstractType`). `ID` must be non-empty, `Version` must be exactly
+   `"2.0"`, and `IssueInstant` must parse as an `xsd:dateTime`. A request
+   missing any of these previously received a full signed response — a
+   missing `ID` silently became an empty `InResponseTo` rather than being
+   refused.
+2. **`AssertionConsumerServiceURL` must be present**, as before.
+3. **`AssertionConsumerServiceURL` must be registered.** `SamlOptions.acsUrls`
+   is the service-provider metadata a real IdP consults before trusting a
+   redirect target — the SAML twin of `UaaClient.redirectUris` in
+   `src/clients.ts`, checked the same way: exact, byte-for-byte string
+   comparison, never origin or prefix matching. There is no default:
+
+   ```ts
+   const acs = await startServer({ 'POST /callback': (req, res) => { /* ... */ } });
+   const idp = await startMockSamlIdp({
+     acsUrls: [`${acs.url}/callback`],
+   });
+   ```
+
+   Omitting `acsUrls` is not a permissive default — it means this IdP has
+   no relying party registered at all, so `/sso` refuses **every**
+   `AuthnRequest` with a `400` naming the missing registration, which is
+   the faithful model: a real IdP with no service-provider metadata has
+   nowhere it is willing to deliver an assertion to either.
 
 ### Corruption variants
 
@@ -285,7 +343,7 @@ or `expired`. What it offers instead is the two-step shape that *makes*
 replay dangerous:
 
 ```ts
-const idp = await startMockSamlIdp();
+const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
 // ... deliver an assertion once ...
 idp.repeatLastAssertion(); // one-shot: reuses the previous assertion's ID next time
 // ... deliver again ...

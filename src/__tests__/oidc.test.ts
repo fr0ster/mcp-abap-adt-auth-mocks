@@ -16,6 +16,7 @@ function authorizeUrl(base: string, params: Record<string, string>) {
     client_id: 'mock-client',
     response_type: 'code',
     redirect_uri: 'http://localhost:61001/callback',
+    scope: 'openid',
     ...params,
   }).toString()}`;
 }
@@ -32,6 +33,7 @@ async function getOidcCode(
       client_id: clientId,
       response_type: 'code',
       redirect_uri: redirectUri,
+      scope: 'openid',
       code_challenge: challenge,
       code_challenge_method: 'S256',
     }).toString()}`,
@@ -674,6 +676,7 @@ describe('mock OIDC', () => {
           client_id: 'first-client',
           response_type: 'code',
           redirect_uri: redirectUri,
+          scope: 'openid',
           code_challenge: challenge,
           code_challenge_method: 'S256',
         }).toString()}`,
@@ -860,6 +863,92 @@ describe('mock OIDC', () => {
         'unsupported_response_type',
       );
       expect(location.searchParams.get('error_description')).toMatch(/token/);
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // OIDC Core §3.1.2.1: without "openid" in scope this is a plain OAuth
+  // request, not an OIDC one — refused at the callback like response_type
+  // and PKCE, since client_id and redirect_uri are already trusted.
+  it('accepts a scope containing openid among other tokens', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          scope: 'openid profile',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('code')).toBeTruthy();
+      expect(location.searchParams.get('error')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  // The tokenisation proof: "openidx" contains "openid" as a substring, so
+  // a check written as scope.includes('openid') rather than a tokenised
+  // membership test would wrongly accept this. Deleting the tokenisation
+  // and substituting a substring check must turn this test red.
+  it('refuses a scope that only contains "openid" as a substring, at the callback', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        authorizeUrl(oidc.url, {
+          scope: 'openidx',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          state: 'st-7',
+        }),
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('invalid_scope');
+      expect(location.searchParams.get('error_description')).toMatch(/openid/);
+      expect(location.searchParams.get('state')).toBe('st-7');
+      expect(location.searchParams.get('code')).toBeNull();
+    } finally {
+      await oidc.close();
+    }
+  });
+
+  it('refuses an authorize request with no scope at all, at the callback', async () => {
+    const oidc = await startMockOidc();
+    try {
+      const { challenge } = pkce();
+      const res = await fetch(
+        `${oidc.url}/authorize?${new URLSearchParams({
+          client_id: 'mock-client',
+          response_type: 'code',
+          redirect_uri: 'http://localhost:61001/callback',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          state: 'st-8',
+        }).toString()}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      const location = new URL(res.headers.get('location') ?? '');
+      expect(location.searchParams.get('error')).toBe('invalid_scope');
+      // Deliberately narrower than /openid/: that pattern also matches the
+      // "must include openid, got: ..." message the tokenised-membership
+      // check below produces, so it would stay green even if this dedicated
+      // presence check were deleted and an absent scope fell through to
+      // that check instead (whose "got: " would silently print
+      // "undefined").
+      expect(location.searchParams.get('error_description')).toMatch(
+        /scope is required/,
+      );
+      expect(location.searchParams.get('state')).toBe('st-8');
       expect(location.searchParams.get('code')).toBeNull();
     } finally {
       await oidc.close();

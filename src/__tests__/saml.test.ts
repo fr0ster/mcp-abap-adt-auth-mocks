@@ -19,7 +19,8 @@ function escapeXmlAttribute(value: string): string {
 function authnRequest(acsUrl: string, id = '_req1'): string {
   const xml =
     `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
-    `ID="${id}" Version="2.0" AssertionConsumerServiceURL="${escapeXmlAttribute(acsUrl)}"/>`;
+    `ID="${id}" Version="2.0" IssueInstant="${new Date().toISOString()}" ` +
+    `AssertionConsumerServiceURL="${escapeXmlAttribute(acsUrl)}"/>`;
   return deflateRawSync(Buffer.from(xml, 'utf8')).toString('base64');
 }
 
@@ -38,7 +39,7 @@ async function startAcs() {
 describe('mock SAML IdP', () => {
   it('returns an auto-submitting form rather than posting to the ACS itself', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       const url = `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
         authnRequest(`${acs.url}/callback`),
@@ -56,7 +57,7 @@ describe('mock SAML IdP', () => {
 
   it('delivers the assertion when a browser submits the form', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       await visit(
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
@@ -71,7 +72,7 @@ describe('mock SAML IdP', () => {
 
   it('carries RelayState from the query string through the form', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       await visit(
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
@@ -87,7 +88,7 @@ describe('mock SAML IdP', () => {
 
   it('signs the assertion by default and exposes its certificate', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       expect(idp.certificatePem).toContain('BEGIN CERTIFICATE');
       await visit(
@@ -105,7 +106,10 @@ describe('mock SAML IdP', () => {
 
   it('omits the signature for the unsigned variant', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'unsigned' });
+    const idp = await startMockSamlIdp({
+      variant: 'unsigned',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       await visit(
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
@@ -122,7 +126,10 @@ describe('mock SAML IdP', () => {
 
   it('names a different ACS for the wrongDestination variant', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'wrongDestination' });
+    const idp = await startMockSamlIdp({
+      variant: 'wrongDestination',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       await visit(
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
@@ -141,7 +148,7 @@ describe('mock SAML IdP', () => {
 
   it('echoes InResponseTo by default and breaks it on demand', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       await visit(
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
@@ -175,10 +182,10 @@ describe('mock SAML IdP', () => {
   // green, because none of them uses a character that matters.
   it('carries reserved characters through the form unharmed', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const acsUrl = `${acs.url}/callback?tenant=one&flow=saml`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
     const relayState = 'a&b"c<d>e\'f';
     try {
-      const acsUrl = `${acs.url}/callback?tenant=one&flow=saml`;
       await visit(
         `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(acsUrl))}` +
           `&RelayState=${encodeURIComponent(relayState)}`,
@@ -213,7 +220,7 @@ describe('mock SAML IdP', () => {
   // `=== undefined` check with a truthy one and every other case stays green.
   it('carries an empty RelayState, and omits the field when there was none', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       const request = encodeURIComponent(authnRequest(`${acs.url}/callback`));
 
@@ -235,7 +242,7 @@ describe('mock SAML IdP', () => {
   // second delivery is valid, which is exactly why a verifier must remember.
   it('repeats a previous assertion ID on demand', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
     try {
       const url = `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
         authnRequest(`${acs.url}/callback`),
@@ -280,7 +287,7 @@ describe('mock SAML IdP', () => {
     try {
       const xml =
         `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
-        `ID="_req1" Version="2.0"/>`;
+        `ID="_req1" Version="2.0" IssueInstant="${new Date().toISOString()}"/>`;
       const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
         'base64',
       );
@@ -402,6 +409,224 @@ describe('mock SAML IdP', () => {
 });
 
 /**
+ * Finding 1: the SAML twin of clients.ts's refusedUnregisteredRedirectUri.
+ * `SamlOptions.acsUrls` is the service-provider metadata a real IdP would
+ * consult before trusting AssertionConsumerServiceURL; there is no
+ * permissive default, because a fixed one cannot work when every test's ACS
+ * runs on an ephemeral port. Every case here uses `authnRequest()`, which
+ * carries a valid ID/Version/IssueInstant, so a deleted registration check
+ * would let the request fall through to a full signed delivery rather than
+ * being masked by an unrelated 400.
+ */
+describe('mock SAML IdP — ACS registration', () => {
+  it('refuses an unregistered ACS with 400 and delivers nothing to it', async () => {
+    const acs = await startAcs();
+    // Registered, but not with the ACS this AuthnRequest actually names —
+    // proves membership is checked, not just "acsUrls is non-empty".
+    const idp = await startMockSamlIdp({
+      acsUrls: ['http://127.0.0.1:1/not-the-acs'],
+    });
+    try {
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
+          authnRequest(`${acs.url}/callback`),
+        )}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/not registered/);
+      expect(acs.received).toHaveLength(0);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('accepts a registered ACS', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      await visit(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(acsUrl))}`,
+      );
+      expect(acs.received).toHaveLength(1);
+      expect(acs.received[0].SAMLResponse).toBeTruthy();
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('refuses every AuthnRequest when the IdP has no acsUrls registered at all', async () => {
+    const idp = await startMockSamlIdp();
+    try {
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
+          authnRequest('http://127.0.0.1:1/cb'),
+        )}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/no ACS URLs are registered/);
+    } finally {
+      await idp.close();
+    }
+  });
+
+  // Exactness, pinned the way clients.ts's redirect_uri match already is:
+  // a trailing slash makes it a different string, not a different URL a
+  // human would call "the same". A prefix- or origin-matching
+  // implementation would wrongly accept this.
+  it('refuses an ACS that differs from the registered one only by a trailing slash', async () => {
+    const acs = await startAcs();
+    const registered = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [registered] });
+    try {
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
+          authnRequest(`${registered}/`),
+        )}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/not registered/);
+      expect(acs.received).toHaveLength(0);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('refuses an ACS on the same origin as the registered one but a different path', async () => {
+    const acs = await startAcs();
+    const registered = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [registered] });
+    try {
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(
+          authnRequest(`${acs.url}/callback-other`),
+        )}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/not registered/);
+      expect(acs.received).toHaveLength(0);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+});
+
+/**
+ * Finding 2: SAML Core §3.2.1 makes ID, Version and IssueInstant required on
+ * every RequestAbstractType, AuthnRequest included. Each case below is
+ * registered with the ACS it names, so a deleted check would let the
+ * request fall through to a full signed delivery rather than being masked
+ * by the ACS-registration refusal above — the same reasoning that governs
+ * every other mutation-proof case in this file.
+ */
+describe('mock SAML IdP — AuthnRequest required attributes (SAML Core §3.2.1)', () => {
+  async function idpAndAcs(): Promise<{
+    idp: Awaited<ReturnType<typeof startMockSamlIdp>>;
+    acsUrl: string;
+    close(): Promise<void>;
+  }> {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    return {
+      idp,
+      acsUrl,
+      close: async () => {
+        await idp.close();
+        await acs.close();
+      },
+    };
+  }
+
+  it('refuses an AuthnRequest with no ID attribute', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `Version="2.0" IssueInstant="${new Date().toISOString()}" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/missing a required ID attribute/);
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an AuthnRequest whose Version is not exactly "2.0"', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="1.0" IssueInstant="${new Date().toISOString()}" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/Version must be "2\.0".*got 1\.0/);
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an AuthnRequest with no IssueInstant attribute', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an AuthnRequest whose IssueInstant does not parse as an xsd:dateTime', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="not-a-date" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+});
+
+/**
  * Coverage for the rest of the variant table.
  *
  * The task-9 brief's own test file (above, copied verbatim) only exercises
@@ -437,7 +662,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('statusFailure sets StatusCode to Responder and leaves the rest correct', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'statusFailure' });
+    const idp = await startMockSamlIdp({
+      variant: 'statusFailure',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs, '_req1');
@@ -455,7 +683,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('expired puts NotOnOrAfter in the past and leaves the rest correct', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'expired' });
+    const idp = await startMockSamlIdp({
+      variant: 'expired',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);
@@ -476,7 +707,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('notYetValid puts NotBefore in the future and leaves the rest correct', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'notYetValid' });
+    const idp = await startMockSamlIdp({
+      variant: 'notYetValid',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);
@@ -499,7 +733,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('wrongAudience replaces the Audience and leaves the rest correct', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'wrongAudience' });
+    const idp = await startMockSamlIdp({
+      variant: 'wrongAudience',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs, '_req1');
@@ -514,7 +751,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('wrongRecipient replaces Recipient but leaves Destination correct', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'wrongRecipient' });
+    const idp = await startMockSamlIdp({
+      variant: 'wrongRecipient',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);
@@ -528,7 +768,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('wrongIssuer replaces the Issuer but leaves Destination and Recipient correct', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'wrongIssuer' });
+    const idp = await startMockSamlIdp({
+      variant: 'wrongIssuer',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);
@@ -544,7 +787,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('wrongKey signs with an unrelated key pair, so the shipped certificate no longer verifies it', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'wrongKey' });
+    const idp = await startMockSamlIdp({
+      variant: 'wrongKey',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);
@@ -562,7 +808,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('tamperedAfterSign signs correctly, then breaks the digest of signed content', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'tamperedAfterSign' });
+    const idp = await startMockSamlIdp({
+      variant: 'tamperedAfterSign',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);
@@ -581,7 +830,10 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
 
   it('wrongDestination leaves Recipient pointing at the real ACS', async () => {
     const acs = await startAcs();
-    const idp = await startMockSamlIdp({ variant: 'wrongDestination' });
+    const idp = await startMockSamlIdp({
+      variant: 'wrongDestination',
+      acsUrls: [`${acs.url}/callback`],
+    });
     try {
       const acsUrl = `${acs.url}/callback`;
       const xml = await deliveredXml(idp, acsUrl, acs);

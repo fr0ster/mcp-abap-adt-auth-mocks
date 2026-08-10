@@ -16,6 +16,13 @@
  * and a mock that checked it would be doing the client's job while hiding
  * whether the client does it.
  *
+ * `scope` must include `openid` (OIDC Core §3.1.2.1) — without it a request
+ * is a plain OAuth request, not an OIDC one, and a consumer that stopped
+ * sending it would otherwise pass silently against a mock that advertises
+ * OIDC discovery. Checked after the trust boundary (`client_id` and
+ * `redirect_uri` already valid), so refused at the callback like
+ * `response_type` and PKCE, as `invalid_scope`.
+ *
  * The code is bound to its client by the same functions the UAA mock uses —
  * `authenticateClient`, `refusedUnregisteredClient`,
  * `refusedUnregisteredRedirectUri` and `refusedForeignCredential`, all
@@ -143,6 +150,36 @@ export async function startMockOidc(
         redirectError(
           'unsupported_response_type',
           `unsupported response_type: ${responseType}`,
+        );
+        return;
+      }
+
+      // OIDC Core §3.1.2.1 requires the space-delimited scope value to
+      // include "openid" — that is what makes this an OIDC authorization
+      // request rather than a plain OAuth one. Reported as invalid_scope
+      // rather than invalid_request: RFC 6749 §4.1.2.1 defines invalid_scope
+      // as "the requested scope is invalid, unknown, or malformed", which is
+      // exactly this failure, and reusing invalid_request would make a
+      // scope problem indistinguishable from a structurally malformed
+      // request (missing response_type, for instance) — a consumer
+      // deliberately testing "what does my client do when the server
+      // refuses my scope" needs the more specific code. Tokenised on RFC
+      // 6749 §3.3's single-SP delimiter and matched as whole tokens, not by
+      // substring — "openidx" must not satisfy this the way it would
+      // satisfy a bare .includes('openid') on the raw string.
+      const scopeParam = req.query.scope;
+      if (!scopeParam) {
+        redirectError(
+          'invalid_scope',
+          'scope is required and must include "openid" (OIDC Core §3.1.2.1)',
+        );
+        return;
+      }
+      const scopes = scopeParam.split(' ').filter((s) => s.length > 0);
+      if (!scopes.includes('openid')) {
+        redirectError(
+          'invalid_scope',
+          `scope must include "openid" (OIDC Core §3.1.2.1), got: ${scopeParam}`,
         );
         return;
       }

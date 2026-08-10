@@ -48,11 +48,14 @@ async function session(variant?: SamlVariant) {
       res.end('ok');
     },
   });
-  const idp = await startMockSamlIdp(variant ? { variant } : {});
   const acsUrl = `${acs.url}/callback`;
+  const idp = await startMockSamlIdp(
+    variant ? { variant, acsUrls: [acsUrl] } : { acsUrls: [acsUrl] },
+  );
   const xml =
     `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
-    `ID="${REQUEST_ID}" Version="2.0" AssertionConsumerServiceURL="${acsUrl}"/>`;
+    `ID="${REQUEST_ID}" Version="2.0" IssueInstant="${new Date().toISOString()}" ` +
+    `AssertionConsumerServiceURL="${acsUrl}"/>`;
   const request = deflateRawSync(Buffer.from(xml, 'utf8')).toString('base64');
 
   return {

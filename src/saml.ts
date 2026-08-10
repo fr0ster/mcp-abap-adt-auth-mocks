@@ -40,6 +40,18 @@ export interface SamlOptions {
   variant?: SamlVariant;
   audience?: string;
   issuer?: string;
+  /**
+   * The ACS endpoints this IdP trusts — the SAML twin of `UaaClient.redirectUris`
+   * in `src/clients.ts`, and checked the same way: an `AuthnRequest`'s
+   * `AssertionConsumerServiceURL` must match one of these **exactly**,
+   * byte-for-byte, never by origin or prefix. There is no default, because
+   * every test's ACS runs on an ephemeral port and cannot be known in
+   * advance. Omitting it entirely refuses every `AuthnRequest` with a `400`
+   * naming the missing registration — the faithful model, since a real
+   * identity provider with no service-provider metadata has no relying
+   * party to deliver an assertion to either.
+   */
+  acsUrls?: string[];
 }
 
 export interface MockSamlIdp extends MockHandle {
@@ -50,6 +62,20 @@ export interface MockSamlIdp extends MockHandle {
 }
 
 const SAML_PROTOCOL_NS = 'urn:oasis:names:tc:SAML:2.0:protocol';
+/**
+ * SAML Core §3.2.1 (`RequestAbstractType`) requires `IssueInstant` to be an
+ * `xsd:dateTime`. This is XML Schema's canonical (though not sole legal)
+ * lexical form — `YYYY-MM-DDTHH:MM:SS` with optional fractional seconds and
+ * an optional `Z`/`±HH:MM` offset — and is exactly what every AuthnRequest
+ * this family builds actually emits (`new Date().toISOString()`), so it is
+ * strict enough to catch a malformed or absent value without rejecting a
+ * conformant one.
+ */
+const XSD_DATE_TIME =
+  /^-?\d{4,}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/;
+function isValidIssueInstant(value: string): boolean {
+  return XSD_DATE_TIME.test(value) && !Number.isNaN(Date.parse(value));
+}
 const STATUS_SUCCESS = 'urn:oasis:names:tc:SAML:2.0:status:Success';
 const STATUS_RESPONDER_FAILURE = 'urn:oasis:names:tc:SAML:2.0:status:Responder';
 const WRONG_ENDPOINT = 'http://127.0.0.1:1/other';
@@ -190,6 +216,7 @@ export async function startMockSamlIdp(
   const issuer = options.issuer ?? 'mock-idp';
   const audience = options.audience ?? 'mock-sp';
   let variant: SamlVariant = options.variant ?? 'valid';
+  const registeredAcsUrls = options.acsUrls;
 
   const key = generateKeyMaterial();
   // Generated lazily: most instances never use the wrongKey variant, and
@@ -263,12 +290,66 @@ export async function startMockSamlIdp(
         );
         return;
       }
+      // SAML Core §3.2.1 makes ID, Version and IssueInstant required on
+      // every RequestAbstractType, AuthnRequest included. Checked here, on
+      // the document element already confirmed to be an AuthnRequest, and
+      // before anything specific to *this* request type (its ACS) is even
+      // read — a request missing one of these three is malformed
+      // independently of what it asks for.
+      const requestId = root.getAttribute('ID') ?? '';
+      if (!requestId) {
+        res.statusCode = 400;
+        res.end(
+          'AuthnRequest is missing a required ID attribute (SAML Core §3.2.1, RequestAbstractType)',
+        );
+        return;
+      }
+      const version = root.getAttribute('Version');
+      if (version !== '2.0') {
+        res.statusCode = 400;
+        res.end(
+          `AuthnRequest Version must be "2.0" (SAML Core §3.2.1, RequestAbstractType), got ${version ?? 'none'}`,
+        );
+        return;
+      }
+      const issueInstant = root.getAttribute('IssueInstant');
+      if (!issueInstant || !isValidIssueInstant(issueInstant)) {
+        res.statusCode = 400;
+        res.end(
+          'AuthnRequest IssueInstant must be a valid xsd:dateTime (SAML Core §3.2.1, RequestAbstractType)',
+        );
+        return;
+      }
+
       const acsUrl =
         root.getAttribute('AssertionConsumerServiceURL') || undefined;
-      const requestId = root.getAttribute('ID') ?? '';
       if (!acsUrl) {
         res.statusCode = 400;
         res.end('missing AssertionConsumerServiceURL');
+        return;
+      }
+      // The SAML twin of clients.ts's refusedUnregisteredRedirectUri:
+      // AssertionConsumerServiceURL is client-supplied, and trusting it
+      // without checking it against service-provider metadata would let a
+      // forged AuthnRequest aim a signed assertion at an attacker's URL.
+      // Omitting acsUrls entirely is not a permissive default — it means
+      // this IdP has no service-provider metadata at all, so it refuses
+      // every request, exactly as a real IdP would have no relying party to
+      // deliver to. Registered means registered exactly: RFC 6749 §3.1.2.3's
+      // byte-for-byte comparison, restated here because the two checks are
+      // the same rule wearing different protocol names.
+      if (registeredAcsUrls === undefined) {
+        res.statusCode = 400;
+        res.end(
+          'no ACS URLs are registered for this IdP: pass SamlOptions.acsUrls to register the AssertionConsumerServiceURL an AuthnRequest may name',
+        );
+        return;
+      }
+      if (!registeredAcsUrls.includes(acsUrl)) {
+        res.statusCode = 400;
+        res.end(
+          'AssertionConsumerServiceURL is not registered for this IdP (SamlOptions.acsUrls)',
+        );
         return;
       }
 
