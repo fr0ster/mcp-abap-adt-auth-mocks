@@ -164,10 +164,19 @@ wrote the mistake:
   §4.1.2.1 defines `invalid_scope` as "the requested scope is invalid,
   unknown, or malformed," which is exactly this failure, and reusing
   `invalid_request` would make a scope problem indistinguishable from a
-  structurally malformed request. `scope` is tokenised on RFC 6749 §3.3's
-  single-`SP` delimiter and matched as a whole token — `scope=openidx` is
-  refused, not accepted by a substring check that would wrongly see
-  `openid` inside it.
+  structurally malformed request. `scope` is first checked against RFC
+  6749 §3.3's whole `scope = scope-token *( SP scope-token )` grammar —
+  one or more space-separated tokens, no leading or trailing space, no
+  doubled space — and only a value that passes is then tokenised and
+  matched as whole tokens: `scope=openidx` is refused as not containing
+  `openid`, not accepted by a substring check that would wrongly see
+  `openid` inside it, and `scope=openid%20%20profile` (a doubled space) or
+  a leading/trailing space is refused as malformed before `openid`
+  membership is even checked — with its own `invalid_scope` message, since
+  a malformed scope and a well-formed scope missing `openid` are different
+  mistakes. The ASCII character-class the grammar restricts each token to
+  (RFC 6749 §3.3's `%x21 / %x23-5B / %x5D-7E`) is enforced; no other corner
+  of the production is relaxed.
 - **Refresh tokens rotate by default** (`rotateRefreshTokens: true`): each
   refresh exchange invalidates the presented token and issues a new one, and
   presenting an already-superseded token is refused as reuse — configurable
@@ -193,7 +202,17 @@ wrote the mistake:
   `IssueInstant`.** SAML Core §3.2.1 makes all three required on
   `RequestAbstractType`; `/sso` now refuses a request missing any of them
   with a `400` naming which one, rather than silently treating a missing
-  `ID` as an empty `InResponseTo`.
+  `ID` as an empty `InResponseTo`. `ID` must additionally be a well-formed
+  `xs:ID` (`NCName`) — no leading digit, no spaces or colons — refusing a
+  non-empty but malformed value such as `ID="123"` or
+  `ID="contains spaces"` that previously flowed straight into
+  `InResponseTo`; only the ASCII subset of `NCName` is checked. And
+  `IssueInstant` is validated as an actual calendar date, not merely a
+  parseable one: `Date.parse` normalises rather than rejecting, so
+  `IssueInstant="2026-02-30T00:00:00Z"` used to silently become 2 March and
+  pass — the check now round-trips the captured year/month/day/etc. through
+  `Date.UTC` and refuses anything that does not survive unchanged, while
+  still accepting a genuine leap day (`2028-02-29T00:00:00Z`).
 
 ## Mock UAA (`startMockUaa`)
 
@@ -257,6 +276,24 @@ Once the document element checks out, three more rules apply, in order:
    missing any of these previously received a full signed response — a
    missing `ID` silently became an empty `InResponseTo` rather than being
    refused.
+
+   `ID` is further required to be a well-formed `xs:ID`
+   (`NCName`, XML Namespaces 1.0 §3): a leading letter or underscore, then
+   letters, digits, `.`, `-` or `_` — no leading digit, no spaces or
+   colons. Only the ASCII subset of `NCName` is implemented; the full
+   production's non-ASCII `NameStartChar`/`NameChar` ranges are not. A
+   non-empty but malformed `ID` such as `"123"` or `"contains spaces"` was
+   previously accepted and forwarded into `InResponseTo` unchanged.
+
+   `IssueInstant`'s calendar is validated too, not just its lexical shape:
+   `Date.parse` normalises an impossible date rather than rejecting it —
+   `2026-02-30T00:00:00Z` used to silently become 2 March and pass. The
+   check now captures the year, month, day, hour, minute and second from
+   the pattern, rebuilds the corresponding UTC instant with `Date.UTC`, and
+   refuses unless every field survives unchanged; a genuine leap day
+   (`2028-02-29T00:00:00Z`) still passes. Deliberately not implemented: the
+   `xsd:dateTime` end-of-day form (`24:00:00`), leap seconds, and negative
+   (BCE) years.
 2. **`AssertionConsumerServiceURL` must be present**, as before.
 3. **`AssertionConsumerServiceURL` must be registered.** `SamlOptions.acsUrls`
    is the service-provider metadata a real IdP consults before trusting a

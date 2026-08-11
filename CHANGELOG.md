@@ -33,7 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delimiter and matched as a whole token — `scope=openidx` does not
   satisfy it. Checked after the trust boundary, so refused **at the
   callback** as `invalid_scope`, mirroring `state`, the same shape as the
-  existing `response_type` and PKCE refusals.
+  existing `response_type` and PKCE refusals. `scope` is now also checked
+  against RFC 6749 §3.3's whole `scope = scope-token *( SP scope-token )`
+  grammar **before** the `openid` membership test runs: a doubled space
+  (`"openid  profile"`), a leading space (`" openid"`) or a trailing space
+  (`"openid "`) each produced an empty token that a plain `.split(' ')` +
+  `.includes` membership test silently ignored, letting a malformed
+  `scope` through. Refused as `invalid_scope` with its own message,
+  distinct from "must include openid", since the two are different
+  mistakes.
 - `SamlOptions` gains `acsUrls?: string[]`, the SAML twin of
   `UaaClient.redirectUris`. `startMockSamlIdp`'s `GET /sso` now refuses an
   `AuthnRequest` whose `AssertionConsumerServiceURL` is not registered in
@@ -51,6 +59,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an empty `InResponseTo` rather than being refused. **Breaking**: an
   `AuthnRequest` built without `IssueInstant` (or with a missing `ID` or a
   `Version` other than `"2.0"`) is now refused instead of answered.
+- `ID` is now additionally required to be a well-formed `xs:ID`
+  (`NCName`, XML Namespaces 1.0 §3): a leading letter or underscore, then
+  letters, digits, `.`, `-` or `_`. `ID="123"` and `ID="contains spaces"`
+  were previously accepted (only non-emptiness was checked) and flowed
+  straight into `InResponseTo`; both are now refused with a `400`. Only
+  the ASCII subset of `NCName` is implemented — the full production's
+  non-ASCII `NameStartChar`/`NameChar` ranges are not. **Breaking**: an
+  `AuthnRequest` whose `ID` is non-empty but not an ASCII `NCName` is now
+  refused instead of answered.
+- `IssueInstant`'s calendar is now validated, not just its lexical shape
+  and `Date.parse`-ability: `Date.parse` normalises an impossible date
+  rather than rejecting it (`2026-02-30T00:00:00Z` silently became 2
+  March and passed; `2026-04-31T12:00:00Z` similarly became 1 May). The
+  check now round-trips the year/month/day/hour/minute/second captured
+  from the pattern through `Date.UTC` and refuses unless every field
+  survives unchanged — a genuine leap day (`2028-02-29T00:00:00Z`) is
+  still accepted. Deliberately not implemented: the `xsd:dateTime`
+  end-of-day form (`24:00:00`), leap seconds, and the calendar semantics
+  of a negative (BCE) year. **Breaking**: an `AuthnRequest` whose
+  `IssueInstant` names a calendar date that does not exist is now refused
+  instead of answered with a silently-normalised date.
 
 ## [0.1.0] - 2026-08-07
 

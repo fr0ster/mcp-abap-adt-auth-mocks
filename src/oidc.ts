@@ -19,9 +19,15 @@
  * `scope` must include `openid` (OIDC Core §3.1.2.1) — without it a request
  * is a plain OAuth request, not an OIDC one, and a consumer that stopped
  * sending it would otherwise pass silently against a mock that advertises
- * OIDC discovery. Checked after the trust boundary (`client_id` and
- * `redirect_uri` already valid), so refused at the callback like
- * `response_type` and PKCE, as `invalid_scope`.
+ * OIDC discovery. `scope` is also checked against RFC 6749 §3.3's
+ * `scope-token *( SP scope-token )` grammar before any token is looked at,
+ * so "openid  profile" (a doubled space), " openid" and "openid " are
+ * refused as malformed rather than tolerated by a split that just ignores
+ * the empty token they produce. Both checks run after the trust boundary
+ * (`client_id` and `redirect_uri` already valid), so both are refused at
+ * the callback like `response_type` and PKCE, as `invalid_scope` — with
+ * distinct messages, since a malformed scope and a well-formed scope
+ * missing `openid` are different mistakes.
  *
  * The code is bound to its client by the same functions the UAA mock uses —
  * `authenticateClient`, `refusedUnregisteredClient`,
@@ -76,6 +82,25 @@ interface IssuedCode {
 const PKCE_SHAPE = /^[A-Za-z0-9\-._~]{43,128}$/;
 function hasPkceShape(value: string): boolean {
   return PKCE_SHAPE.test(value);
+}
+
+/**
+ * RFC 6749 §3.3: `scope = scope-token *( SP scope-token )` where
+ * `scope-token = 1*( %x21 / %x23-5B / %x5D-7E )` — one or more characters
+ * from printable ASCII excluding space (0x20), `"` (0x22) and `\` (0x5C),
+ * separated by exactly one space, with no leading or trailing space.
+ * Matched against the *whole* value, before any token is looked at: a
+ * split on a single space still turns "openid  profile" (double space),
+ * " openid" and "openid " into an array containing an empty string, and a
+ * plain `.includes('openid')` membership test simply ignores that empty
+ * token rather than refusing the request that produced it.
+ */
+const SCOPE_TOKEN_SOURCE = '[\\x21\\x23-\\x5B\\x5D-\\x7E]+';
+const SCOPE_VALUE = new RegExp(
+  `^${SCOPE_TOKEN_SOURCE}(?: ${SCOPE_TOKEN_SOURCE})*$`,
+);
+function isValidScopeFormat(value: string): boolean {
+  return SCOPE_VALUE.test(value);
 }
 
 export async function startMockOidc(
@@ -175,9 +200,28 @@ export async function startMockOidc(
         );
         return;
       }
+      // Checked against the whole RFC 6749 §3.3 production before any
+      // token is examined: "openid  profile" (double space), " openid" and
+      // "openid " are all malformed under that grammar (no empty
+      // scope-token, no leading/trailing space), and must be refused as
+      // such rather than silently tolerated by a split-and-search that
+      // just ignores the empty token they produce. Reported with its own
+      // message, distinct from the "must include openid" refusal below —
+      // a malformed scope and a well-formed scope missing "openid" are two
+      // different mistakes, and a test for one must not be satisfiable by
+      // the other's message.
+      if (!isValidScopeFormat(scopeParam)) {
+        redirectError(
+          'invalid_scope',
+          `scope is malformed: must be one or more space-separated tokens with no leading, trailing, or doubled spaces (RFC 6749 §3.3), got: ${scopeParam}`,
+        );
+        return;
+      }
       // Split on RFC 6749 §3.3's single-SP delimiter and matched by
-      // `.includes`, so extra whitespace producing empty tokens changes
-      // nothing about whether "openid" is a member — no filtering needed.
+      // `.includes` as whole tokens, not by substring — "openidx" must not
+      // satisfy this the way it would satisfy a bare
+      // scopeParam.includes('openid'). The format check above already
+      // guarantees no empty token reaches this split.
       const scopes = scopeParam.split(' ');
       if (!scopes.includes('openid')) {
         redirectError(

@@ -921,6 +921,47 @@ describe('mock OIDC', () => {
     }
   });
 
+  // Finding 3 (fifth review, PR #1): splitting scope on a single space and
+  // testing membership with `.includes` lets a malformed value through,
+  // because the empty tokens a bad split produces are simply ignored by
+  // that test. Each case below is malformed under RFC 6749 §3.3's
+  // `scope-token *( SP scope-token )` grammar (no empty scope-token, no
+  // leading/trailing space) and must be refused as such — with a message
+  // distinct from "must include openid", so a test for one refusal cannot
+  // be satisfied by the other's message.
+  it.each([
+    ['a doubled space between tokens', 'openid  profile'],
+    ['a leading space', ' openid'],
+    ['a trailing space', 'openid '],
+  ])(
+    'refuses a malformed scope value with %s, at the callback',
+    async (_label, scope) => {
+      const oidc = await startMockOidc();
+      try {
+        const { challenge } = pkce();
+        const res = await fetch(
+          authorizeUrl(oidc.url, {
+            scope,
+            code_challenge: challenge,
+            code_challenge_method: 'S256',
+            state: 'st-9',
+          }),
+          { redirect: 'manual' },
+        );
+        expect(res.status).toBe(302);
+        const location = new URL(res.headers.get('location') ?? '');
+        expect(location.searchParams.get('error')).toBe('invalid_scope');
+        expect(location.searchParams.get('error_description')).toMatch(
+          /scope is malformed/,
+        );
+        expect(location.searchParams.get('state')).toBe('st-9');
+        expect(location.searchParams.get('code')).toBeNull();
+      } finally {
+        await oidc.close();
+      }
+    },
+  );
+
   it('refuses an authorize request with no scope at all, at the callback', async () => {
     const oidc = await startMockOidc();
     try {

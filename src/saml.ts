@@ -72,10 +72,54 @@ const SAML_PROTOCOL_NS = 'urn:oasis:names:tc:SAML:2.0:protocol';
  * conformant one.
  */
 const XSD_DATE_TIME =
-  /^-?\d{4,}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/;
+  /^(-?\d{4,})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/;
+/**
+ * `Date.parse` (and `new Date(string)`) normalises rather than rejecting:
+ * `2026-02-30T00:00:00Z` silently becomes 2 March, so a shape check plus a
+ * parseability check lets an impossible calendar date through. Calendar
+ * validity is checked here by round-trip instead: the year, month, day,
+ * hour, minute and second captured straight from the pattern are fed to
+ * `Date.UTC`, and every captured field must survive unchanged. A date that
+ * rolls over (30 Feb -> 2 Mar, 31 Apr -> 1 May) fails that comparison.
+ *
+ * The date and time fields are validated exactly as written, independently
+ * of any timezone offset — a `Z` or `±hh:mm` suffix does not change whether
+ * 30 February exists, so the offset is matched by the shape regex above but
+ * never read here.
+ *
+ * Deliberately not implemented, so as not to overstate what this checks:
+ * the `xsd:dateTime` end-of-day form (`24:00:00`), leap seconds (`:60`),
+ * and the calendar semantics of a negative (BCE) year — none of which any
+ * conformant IssueInstant this family emits or accepts actually uses.
+ */
 function isValidIssueInstant(value: string): boolean {
-  return XSD_DATE_TIME.test(value) && !Number.isNaN(Date.parse(value));
+  const match = XSD_DATE_TIME.exec(value);
+  if (!match) return false;
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match;
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  const second = Number(secondStr);
+  const asUtc = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return (
+    asUtc.getUTCFullYear() === year &&
+    asUtc.getUTCMonth() === month - 1 &&
+    asUtc.getUTCDate() === day &&
+    asUtc.getUTCHours() === hour &&
+    asUtc.getUTCMinutes() === minute &&
+    asUtc.getUTCSeconds() === second
+  );
 }
+/**
+ * ASCII subset of the `NCName` production (XML Namespaces 1.0 §3) that
+ * `xs:ID` — and so SAML's `AuthnRequest/@ID` — is built on: a leading
+ * letter or underscore, then any run of letters, digits, ".", "-" or "_".
+ * The full production also admits a wide range of non-ASCII
+ * NameStartChar/NameChar code points; those are not implemented here.
+ */
+const NCNAME_ASCII = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 const STATUS_SUCCESS = 'urn:oasis:names:tc:SAML:2.0:status:Success';
 const STATUS_RESPONDER_FAILURE = 'urn:oasis:names:tc:SAML:2.0:status:Responder';
 const WRONG_ENDPOINT = 'http://127.0.0.1:1/other';
@@ -301,6 +345,22 @@ export async function startMockSamlIdp(
         res.statusCode = 400;
         res.end(
           'AuthnRequest is missing a required ID attribute (SAML Core §3.2.1, RequestAbstractType)',
+        );
+        return;
+      }
+      // SAML Core §3.2.1 gives ID the XML Schema `xs:ID` type, whose value
+      // space is `NCName`: no leading digit, and no spaces or colons
+      // anywhere. A non-empty string that violates that shape (e.g.
+      // "123" or "contains spaces") was previously accepted and flowed
+      // straight into InResponseTo. This checks the ASCII subset of
+      // NCName only — a leading letter or underscore, then letters,
+      // digits, ".", "-" or "_" — and deliberately does not implement the
+      // full production's Unicode NameStartChar/NameChar ranges, which no
+      // ID this family mints or expects ever needs.
+      if (!NCNAME_ASCII.test(requestId)) {
+        res.statusCode = 400;
+        res.end(
+          `AuthnRequest ID attribute must be an NCName (SAML Core §3.2.1, RequestAbstractType uses xs:ID): a leading letter or underscore, then letters, digits, ".", "-", "_" (ASCII subset), got "${requestId}"`,
         );
         return;
       }

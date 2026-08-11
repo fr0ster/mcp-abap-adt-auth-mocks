@@ -579,6 +579,73 @@ describe('mock SAML IdP — AuthnRequest required attributes (SAML Core §3.2.1)
     }
   });
 
+  // Finding 2 (fifth review, PR #1): SAML gives ID the xs:ID (NCName) type,
+  // so a non-empty value that is not an NCName was previously accepted and
+  // flowed straight into InResponseTo. The assertion targets a fragment
+  // ("must be an NCName") that appears in no other refusal in this suite,
+  // including the "missing a required ID attribute" case right above —
+  // a shared prefix there would have kept this test green even after the
+  // shape check it protects was deleted.
+  it('refuses an AuthnRequest ID attribute that contains a space', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="contains spaces" Version="2.0" IssueInstant="${new Date().toISOString()}" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/must be an NCName/);
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an AuthnRequest ID attribute that starts with a digit', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="123" Version="2.0" IssueInstant="${new Date().toISOString()}" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/must be an NCName/);
+    } finally {
+      await close();
+    }
+  });
+
+  it('accepts an AuthnRequest ID attribute that is a conventional SAML id', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_a1b2c3" Version="2.0" IssueInstant="${new Date().toISOString()}" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toMatch(/<form[^>]+method=["']post["']/i);
+    } finally {
+      await close();
+    }
+  });
+
   it('refuses an AuthnRequest whose Version is not exactly "2.0"', async () => {
     const { idp, acsUrl, close } = await idpAndAcs();
     try {
@@ -694,6 +761,79 @@ describe('mock SAML IdP — AuthnRequest required attributes (SAML Core §3.2.1)
       );
     } finally {
       await close();
+    }
+  });
+
+  // Finding 1 (fifth review, PR #1): `Date.parse` normalises rather than
+  // rejecting an impossible calendar date — "2026-02-30" silently becomes
+  // 2 March, so a shape check plus a bare `!Number.isNaN(Date.parse(...))`
+  // check accepts it. Only a round-trip through the captured
+  // year/month/day/etc. catches a day that does not exist.
+  it('refuses an AuthnRequest whose IssueInstant names a day that rolls into the next month (30 February)', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-02-30T00:00:00Z" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // Same rule, a different rollover shape: April has 30 days, not 31.
+  it('refuses an AuthnRequest whose IssueInstant names a day that rolls into the next month (31 April)', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-04-31T12:00:00Z" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // This is what stops someone "fixing" the round-trip with a flat
+  // 28-day rule for February: 2028 is a genuine leap year (divisible by 4,
+  // not by 100), so 29 February is a real date and must be accepted.
+  it('accepts an AuthnRequest whose IssueInstant names a genuine leap day', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2028-02-29T00:00:00Z" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
     }
   });
 });
