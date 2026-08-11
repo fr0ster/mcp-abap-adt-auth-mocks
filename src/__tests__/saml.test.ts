@@ -836,6 +836,280 @@ describe('mock SAML IdP — AuthnRequest required attributes (SAML Core §3.2.1)
       await acs.close();
     }
   });
+
+  // Finding 1 (sixth review, PR #1): the old shape regex matched any two
+  // digits either side of the offset's colon, and the round-trip never read
+  // the offset at all, so an out-of-range offset sailed through as long as
+  // the calendar portion was valid. `xsd:dateTime` bounds an offset at
+  // ±14:00 (XML Schema Part 2 §3.2.7) — 99 hours and 99 minutes are not a
+  // shape problem, they are a range problem the old code never asked about.
+  it('refuses an AuthnRequest whose IssueInstant offset is out of range in both fields', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00+99:99" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // `+99:99` alone cannot tell an hour bound from a minute bound apart —
+  // both fields are out of range at once, so a mutation that dropped either
+  // half of `offsetHour > 14 || offsetMinute > 59` would still be caught by
+  // the other half and this test would stay green. These two cases isolate
+  // one field out of range at a time.
+  it('refuses an AuthnRequest whose IssueInstant offset hour alone is out of range (+15:00)', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00+15:00" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an AuthnRequest whose IssueInstant offset minute alone is out of range (+05:99)', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00+05:99" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // The case that stops someone "fixing" this with a flat `hours < 14`:
+  // +14:00 is exactly the legal maximum (14 hours, 0 minutes) and must be
+  // accepted, while +14:01 has the same, in-range hour but a minute that
+  // only the "hours === 14 implies minutes === 0" half of the rule catches.
+  // A check that only bounded the hour would wrongly accept this.
+  it('refuses an AuthnRequest whose IssueInstant offset has the maximum hour but a non-zero minute (+14:01)', async () => {
+    const { idp, acsUrl, close } = await idpAndAcs();
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00+14:01" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(
+        /IssueInstant must be a valid xsd:dateTime/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  // Pins the *other* half of the "hour === 14 implies minute === 0"
+  // conjunct: a mutation that dropped the hour===14 guard and refused any
+  // non-zero minute outright — regardless of hour — would still pass every
+  // other offset case in this file (they all use minute 00, or an hour
+  // already out of range), and only this in-range, non-14, non-zero-minute
+  // offset catches it.
+  it('accepts an AuthnRequest whose IssueInstant offset has a non-zero minute at an hour below the maximum (+05:30)', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00+05:30" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('accepts an AuthnRequest whose IssueInstant offset is the legal maximum (+14:00)', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00+14:00" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('accepts an AuthnRequest whose IssueInstant offset is the legal minimum (-14:00)', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00-14:00" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  // A bare `Z` (UTC) must still be accepted — it is what every AuthnRequest
+  // this family actually builds emits, and it is the branch that skips the
+  // offset bounds check entirely rather than exercising it with 00:00.
+  it('accepts an AuthnRequest whose IssueInstant carries a plain Z offset', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const xml =
+        `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+        `ID="_req1" Version="2.0" IssueInstant="2026-08-11T12:00:00Z" ` +
+        `AssertionConsumerServiceURL="${acsUrl}"/>`;
+      const encoded = deflateRawSync(Buffer.from(xml, 'utf8')).toString(
+        'base64',
+      );
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+});
+
+/**
+ * Finding 3 (sixth review, PR #1): SAML Core §3.2.1 requires a recipient to
+ * reject a message whose *present* `Destination` names an endpoint other
+ * than the one it actually arrived at (the same rule the IdP's own outgoing
+ * `Response@Destination` is built to satisfy). `Destination` is optional on
+ * `RequestAbstractType`, so its absence is accepted — deliberately, not by
+ * omission: see the comment on the check in `src/saml.ts`. The IdP's own
+ * `/sso` URL is not known until the socket binds, so each case here builds
+ * its `AuthnRequest` after `startMockSamlIdp` resolves, the same ordering
+ * `holder` inside `src/saml.ts` requires of itself.
+ */
+describe('mock SAML IdP — AuthnRequest Destination (SAML Core §3.2.1)', () => {
+  function authnRequestWithDestination(
+    acsUrl: string,
+    destination: string | undefined,
+  ): string {
+    const destinationAttr =
+      destination === undefined ? '' : ` Destination="${destination}"`;
+    const xml =
+      `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+      `ID="_req1" Version="2.0" IssueInstant="${new Date().toISOString()}"${destinationAttr} ` +
+      `AssertionConsumerServiceURL="${acsUrl}"/>`;
+    return deflateRawSync(Buffer.from(xml, 'utf8')).toString('base64');
+  }
+
+  it('refuses an AuthnRequest whose Destination names a different endpoint', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const encoded = authnRequestWithDestination(
+        acsUrl,
+        'https://other-idp.example/sso',
+      );
+      const res = await fetch(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(await res.text()).toMatch(/Destination does not match/);
+      expect(acs.received).toHaveLength(0);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  // Proves the check reads the attribute rather than always refusing:
+  // naming this very IdP's own /sso endpoint must succeed.
+  it("accepts an AuthnRequest whose Destination matches this IdP's own endpoint", async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const encoded = authnRequestWithDestination(acsUrl, `${idp.url}/sso`);
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  // Proves the check reads the attribute rather than always passing: an
+  // absent Destination is accepted, distinct from a matching one above —
+  // together they show the outcome tracks whether Destination is present
+  // and, when present, whether it matches, not a constant verdict.
+  it('accepts an AuthnRequest with no Destination attribute at all', async () => {
+    const acs = await startAcs();
+    const acsUrl = `${acs.url}/callback`;
+    const idp = await startMockSamlIdp({ acsUrls: [acsUrl] });
+    try {
+      const encoded = authnRequestWithDestination(acsUrl, undefined);
+      await visit(`${idp.url}/sso?SAMLRequest=${encodeURIComponent(encoded)}`);
+      expect(acs.received).toHaveLength(1);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
 });
 
 /**

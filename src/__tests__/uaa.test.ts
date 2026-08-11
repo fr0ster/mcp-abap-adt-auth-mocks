@@ -650,6 +650,79 @@ describe('mock UAA', () => {
     }
   });
 
+  // Finding 2 (sixth review, PR #1): a malformed Authorization: Basic header
+  // used to leave basicId undefined, so usedAuthorizationHeader came out
+  // false and the mock fell straight through to valid body credentials —
+  // Basic was attempted and failed, but the caller got in anyway. The guard
+  // lives in src/clients.ts and is shared by both mocks, so this one case
+  // covers the OIDC mock too. The description is asserted on a fragment
+  // this refusal alone produces — neither the "more than one client
+  // authentication method" text oidc.test.ts checks for its own duplicate-
+  // method case, nor "disagree" above, nor "unknown client" appear in it.
+  it('refuses a malformed Authorization: Basic header even when the body carries valid credentials', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: 'Basic !!!',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: 'irrelevant',
+          redirect_uri: 'http://localhost:61001/callback',
+          client_id: 'mock-client',
+          client_secret: 'mock-secret',
+        }).toString(),
+      });
+      // A malformed Basic attempt still counts as "via the header" for RFC
+      // 6749 §5.2's status-code rule, so this is 401 with WWW-Authenticate,
+      // not 400.
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).toMatch(/Basic/);
+      const json = (await res.json()) as {
+        error: string;
+        error_description?: string;
+      };
+      expect(json.error).toBe('invalid_client');
+      expect(json.error_description).toMatch(/not a well-formed Basic/);
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // The other half of "malformed": valid base64 that simply has no ':' once
+  // decoded. Buffer.from(…, 'base64') would happily decode this — only an
+  // explicit search for the separator catches it.
+  it('refuses an Authorization: Basic header whose payload decodes without a colon', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const noColon = Buffer.from('nocolonhere').toString('base64');
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: `Basic ${noColon}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: 'irrelevant',
+          redirect_uri: 'http://localhost:61001/callback',
+        }).toString(),
+      });
+      expect(res.status).toBe(401);
+      const json = (await res.json()) as {
+        error: string;
+        error_description?: string;
+      };
+      expect(json.error).toBe('invalid_client');
+      expect(json.error_description).toMatch(/not a well-formed Basic/);
+    } finally {
+      await uaa.close();
+    }
+  });
+
   // The OIDC twin is oidc.test.ts's 'refuses an authorize request with no
   // redirect_uri at all'; this mock had no counterpart, and deleting
   // uaa.ts:114-118 turns this into new URL(undefined) throwing, which the

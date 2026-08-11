@@ -80,6 +80,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a negative (BCE) year. **Breaking**: an `AuthnRequest` whose
   `IssueInstant` names a calendar date that does not exist is now refused
   instead of answered with a silently-normalised date.
+- `IssueInstant`'s `Z`/`±HH:MM` offset is now range-checked, not just
+  shape-matched: `xsd:dateTime` (XML Schema Part 2 §3.2.7) bounds it at
+  ±14:00 — hours `00`–`14`, minutes `00`–`59`, and when the hour is exactly
+  `14` the minute must be `00` — which the old regex never expressed, so
+  `+99:99` and `+14:01` both passed as long as the calendar portion was
+  valid. `+14:00` and `-14:00` (the legal maximum and minimum) are still
+  accepted, as is a plain `Z`. **Breaking**: an `AuthnRequest` whose
+  `IssueInstant` offset is out of range is now refused instead of answered.
+- A malformed `Authorization: Basic` header — a payload that is not valid
+  base64, or that decodes to a value with no `:` separator — is now refused
+  as `invalid_client` (401 + `WWW-Authenticate`, since Basic was attempted)
+  instead of being silently ignored in favour of valid body credentials.
+  Previously an unparsable Basic header left `usedAuthorizationHeader` and
+  every downstream check believing no Basic attempt had been made at all, so
+  a caller who botched Basic could still get in via `client_id`/`client_secret`
+  in the body. `readClientAuth` now reports the header's presence
+  (`usedAuthorizationHeader`) separately from whether it parsed
+  (`malformedBasic`); `authenticateClient` refuses on `malformedBasic` before
+  any fallback to body credentials and before the duplicate-method check.
+  **Breaking**: a token request carrying an unparsable `Authorization: Basic`
+  header alongside otherwise-valid body credentials is now refused instead of
+  authenticated via the body.
+- `startMockSamlIdp`'s `GET /sso` now checks the inflated `AuthnRequest`'s
+  `Destination` attribute, when present, against the IdP's own `/sso`
+  endpoint (SAML Core §3.2.1) and refuses a mismatch with a `400` — a
+  request built for one IdP could otherwise be replayed at another that
+  trusts the same relying party. `Destination` is optional on
+  `RequestAbstractType`; an `AuthnRequest` that omits it is still accepted,
+  by deliberate choice — this family's own `AuthnRequest` builder never sets
+  it, and there is nothing to compare against when it is missing. **Breaking**:
+  an `AuthnRequest` whose `Destination` names a different endpoint is now
+  refused instead of answered.
 
 ## [0.1.0] - 2026-08-07
 

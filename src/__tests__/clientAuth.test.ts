@@ -106,4 +106,80 @@ describe('readClientAuth', () => {
     });
     expect(r.conflict).toBe(true);
   });
+
+  // Finding 2 (sixth review, PR #1): the old implementation only ever set
+  // usedAuthorizationHeader from whether basicId came out defined, so a
+  // Basic header that failed to parse looked identical to no Basic header
+  // at all. `!!!` cannot be base64-decoded meaningfully — `Buffer.from`
+  // itself is lenient (it drops invalid characters rather than throwing),
+  // so only an explicit shape check catches this.
+  it('flags malformedBasic, and still usedAuthorizationHeader, for a payload that is not valid base64', () => {
+    const r = readClientAuth({
+      ...base,
+      headers: { authorization: 'Basic !!!' },
+      body: { client_id: 'cid', client_secret: 'secret' },
+    });
+    expect(r.malformedBasic).toBe(true);
+    expect(r.usedAuthorizationHeader).toBe(true);
+  });
+
+  // `!!!` alone does not prove the base64-shape check is load-bearing: it
+  // contains no valid base64 characters at all, so `Buffer.from` decodes it
+  // to '' either way, and the *separate* "no colon" branch below would
+  // catch it even with the shape check deleted entirely. This payload is
+  // built to defeat that: it is `cid:secret`'s valid encoding with one `!`
+  // spliced into the middle — `BASE64_SHAPE` must refuse it outright, but
+  // `Buffer.from(…, 'base64')` is lenient enough to strip the `!` and
+  // decode the rest anyway, landing on the exact credential a well-formed
+  // header would have carried. Only the explicit shape check — not the
+  // colon check — can catch this one.
+  it('flags malformedBasic for a payload with an invalid character that Buffer.from would silently decode around', () => {
+    const valid = Buffer.from('cid:secret').toString('base64');
+    const tampered = `${valid.slice(0, 2)}!${valid.slice(2)}`;
+    // Sanity check on the premise: Node's lenient base64 decoder really
+    // does strip the invalid character and recover a well-formed-looking
+    // credential from it, which is exactly why a shape check is needed.
+    expect(Buffer.from(tampered, 'base64').toString('utf8')).toBe('cid:secret');
+    const r = readClientAuth({
+      ...base,
+      headers: { authorization: `Basic ${tampered}` },
+    });
+    expect(r.malformedBasic).toBe(true);
+    expect(r.clientId).toBeUndefined();
+  });
+
+  // The other half of "malformed": valid base64 that decodes to a value
+  // with no ':' separator at all, so there is no id/secret split to make.
+  it('flags malformedBasic for a payload that is valid base64 but decodes without a colon', () => {
+    const noColon = Buffer.from('nocolonhere').toString('base64');
+    const r = readClientAuth({
+      ...base,
+      headers: { authorization: `Basic ${noColon}` },
+    });
+    expect(r.malformedBasic).toBe(true);
+    expect(r.usedAuthorizationHeader).toBe(true);
+  });
+
+  it('does not flag malformedBasic for a well-formed Basic header', () => {
+    const basic = Buffer.from('cid:secret').toString('base64');
+    const r = readClientAuth({
+      ...base,
+      headers: { authorization: `Basic ${basic}` },
+    });
+    expect(r.malformedBasic).toBe(false);
+  });
+
+  // conflict is documented to never fire for a malformed Basic attempt —
+  // there is no decoded basicId to compare the body against — even though
+  // the body here carries exactly the shape (a bare client_secret) that
+  // flags a conflict against a well-formed Basic header above.
+  it('does not flag a conflict for a malformed Basic header even when the body carries a client_secret', () => {
+    const r = readClientAuth({
+      ...base,
+      headers: { authorization: 'Basic !!!' },
+      body: { client_secret: 'secret' },
+    });
+    expect(r.malformedBasic).toBe(true);
+    expect(r.conflict).toBe(false);
+  });
 });

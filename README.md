@@ -129,6 +129,23 @@ wrote the mistake:
   added whenever a secret exists), so a mock that refused it would refuse
   its own family's real traffic. Implemented once in `src/clientAuth.ts`,
   shared by both mocks.
+- **A malformed `Authorization: Basic` header is refused, never silently
+  ignored.** A payload that is not valid base64, or that decodes to a value
+  with no `:` separator, used to leave `usedAuthorizationHeader` looking
+  `false` — as if Basic had never been attempted — so a caller who botched
+  Basic could still get in on valid body credentials, and a malformed
+  attempt against a client requiring Basic was answered `invalid_client` as
+  a plain unknown-client 400 rather than the 401 RFC 6749 §5.2 requires once
+  Basic was attempted. `readClientAuth` now tracks the header's *presence*
+  (`usedAuthorizationHeader`, true the moment a request begins with
+  `Basic `) separately from whether it could be *parsed*
+  (`malformedBasic`); `authenticateClient` refuses on `malformedBasic` with
+  its own `invalid_client` message, before any fallback to body credentials
+  and before the duplicate-method check above — a malformed attempt is its
+  own mistake, not license to try the body instead. Because
+  `Buffer.from(…, 'base64')` is lenient (it silently strips characters
+  outside the alphabet rather than failing), the payload's shape is checked
+  explicitly first, against RFC 4648 §4's standard base64 grammar.
 - **A code or a refresh token is bound to the client it was issued to.**
   Register two clients and try to redeem the first client's code, or its
   refresh token, while authenticated as the second, and the mock answers
@@ -212,7 +229,20 @@ wrote the mistake:
   `IssueInstant="2026-02-30T00:00:00Z"` used to silently become 2 March and
   pass — the check now round-trips the captured year/month/day/etc. through
   `Date.UTC` and refuses anything that does not survive unchanged, while
-  still accepting a genuine leap day (`2028-02-29T00:00:00Z`).
+  still accepting a genuine leap day (`2028-02-29T00:00:00Z`). Its `Z`/`±HH:MM`
+  offset, if present, is range-checked too: `xsd:dateTime` (XML Schema Part 2
+  §3.2.7) caps it at ±14:00 — hours `00`–`14`, minutes `00`–`59`, and when the
+  hour is `14` the minute must be `00` — so `IssueInstant="…+99:99"` or
+  `"…+14:01"` are refused even though both have the right shape; `+14:00` and
+  `-14:00` (the legal extremes) are still accepted.
+- **An `AuthnRequest`'s `Destination`, when present, must name this IdP's own
+  `/sso` endpoint** (SAML Core §3.2.1). A request delivered here carrying
+  `Destination="https://other-idp.example/sso"` is refused with a `400` —
+  otherwise a request built for one IdP could be replayed at another that
+  happens to trust the same relying party. `Destination` is optional on
+  `RequestAbstractType`, and an `AuthnRequest` that omits it is accepted by
+  deliberate choice, not oversight: this family's own `AuthnRequest` builder
+  never sets it, and there is nothing to compare against when it is missing.
 
 ## Mock UAA (`startMockUaa`)
 
@@ -268,7 +298,7 @@ reads happen to decode somewhere in the document. A `samlp:LogoutRequest`
 correctly namespaced but wrongly named, or a document in the right shape but
 the wrong namespace, are both refused.
 
-Once the document element checks out, three more rules apply, in order:
+Once the document element checks out, four more rules apply, in order:
 
 1. **`ID`, `Version` and `IssueInstant` are required** (SAML Core §3.2.1,
    `RequestAbstractType`). `ID` must be non-empty, `Version` must be exactly
@@ -294,8 +324,25 @@ Once the document element checks out, three more rules apply, in order:
    (`2028-02-29T00:00:00Z`) still passes. Deliberately not implemented: the
    `xsd:dateTime` end-of-day form (`24:00:00`), leap seconds, and negative
    (BCE) years.
-2. **`AssertionConsumerServiceURL` must be present**, as before.
-3. **`AssertionConsumerServiceURL` must be registered.** `SamlOptions.acsUrls`
+
+   `IssueInstant`'s offset (`Z` or `±HH:MM`) is bounds-checked separately
+   from the calendar round-trip above: `xsd:dateTime` (XML Schema Part 2
+   §3.2.7) caps it at ±14:00 — hours `00`–`14`, minutes `00`–`59`, and when
+   the hour is exactly `14` the minute must be `00`. The old shape regex
+   matched any two digits on either side of the offset's colon and the
+   round-trip never read it, so `+99:99` and `+14:01` both passed as long as
+   the calendar portion was valid; `+14:00` and `-14:00`, the legal extremes,
+   are still accepted, as is a plain `Z`.
+2. **`Destination`, if present, must name this IdP's own `/sso` endpoint**
+   (SAML Core §3.2.1). A recipient that receives a message carrying a
+   `Destination` must check it names the endpoint the message actually
+   arrived at, or a request built for one IdP could be replayed at another
+   that happens to trust the same relying party. `Destination` is optional
+   on `RequestAbstractType`, and its absence is accepted — deliberately, not
+   by oversight: this family's own `AuthnRequest` builder never sets it, and
+   there is nothing to compare against when it is missing.
+3. **`AssertionConsumerServiceURL` must be present**, as before.
+4. **`AssertionConsumerServiceURL` must be registered.** `SamlOptions.acsUrls`
    is the service-provider metadata a real IdP consults before trusting a
    redirect target — the SAML twin of `UaaClient.redirectUris` in
    `src/clients.ts`, checked the same way: exact, byte-for-byte string

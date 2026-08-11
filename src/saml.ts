@@ -70,9 +70,14 @@ const SAML_PROTOCOL_NS = 'urn:oasis:names:tc:SAML:2.0:protocol';
  * this family builds actually emits (`new Date().toISOString()`), so it is
  * strict enough to catch a malformed or absent value without rejecting a
  * conformant one.
+ *
+ * The offset is captured (group 7) rather than merely shape-matched: `xsd:
+ * dateTime` bounds it at ±14:00 (hours 00–14, minutes 00–59, and when hours
+ * is 14 minutes must be 00), which the shape alone does not express — the
+ * regex would happily match `+99:99`.
  */
 const XSD_DATE_TIME =
-  /^(-?\d{4,})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/;
+  /^(-?\d{4,})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?$/;
 /**
  * `Date.parse` (and `new Date(string)`) normalises rather than rejecting:
  * `2026-02-30T00:00:00Z` silently becomes 2 March, so a shape check plus a
@@ -84,8 +89,11 @@ const XSD_DATE_TIME =
  *
  * The date and time fields are validated exactly as written, independently
  * of any timezone offset — a `Z` or `±hh:mm` suffix does not change whether
- * 30 February exists, so the offset is matched by the shape regex above but
- * never read here.
+ * 30 February exists, so the offset never participates in the round-trip.
+ * It is, however, bounds-checked on its own: `xsd:dateTime` caps the offset
+ * at ±14:00 (XML Schema Part 2 §3.2.7), so `+14:01` is out of range even
+ * though `+14:00` is the legal maximum — a flat `hours < 14` would wrongly
+ * refuse the maximum and wrongly accept `+14:59`.
  *
  * Deliberately not implemented, so as not to overstate what this checks:
  * the `xsd:dateTime` end-of-day form (`24:00:00`), leap seconds (`:60`),
@@ -95,7 +103,8 @@ const XSD_DATE_TIME =
 function isValidIssueInstant(value: string): boolean {
   const match = XSD_DATE_TIME.exec(value);
   if (!match) return false;
-  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match;
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, offset] =
+    match;
   const year = Number(yearStr);
   const month = Number(monthStr);
   const day = Number(dayStr);
@@ -103,14 +112,20 @@ function isValidIssueInstant(value: string): boolean {
   const minute = Number(minuteStr);
   const second = Number(secondStr);
   const asUtc = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-  return (
+  const calendarValid =
     asUtc.getUTCFullYear() === year &&
     asUtc.getUTCMonth() === month - 1 &&
     asUtc.getUTCDate() === day &&
     asUtc.getUTCHours() === hour &&
     asUtc.getUTCMinutes() === minute &&
-    asUtc.getUTCSeconds() === second
-  );
+    asUtc.getUTCSeconds() === second;
+  if (!calendarValid) return false;
+  if (offset === undefined || offset === 'Z') return true;
+  const offsetHour = Number(offset.slice(1, 3));
+  const offsetMinute = Number(offset.slice(4, 6));
+  if (offsetHour > 14 || offsetMinute > 59) return false;
+  if (offsetHour === 14 && offsetMinute !== 0) return false;
+  return true;
 }
 /**
  * ASCII subset of the `NCName` production (XML Namespaces 1.0 §3) that
@@ -274,6 +289,11 @@ export async function startMockSamlIdp(
   let lastAssertionId: string | undefined;
   let repeatNext = false;
 
+  // The IdP does not know its own /sso URL until the socket binds — filled
+  // in from `handle` right below, before startMockSamlIdp returns, the same
+  // mutable-holder shape oidc.ts uses for its discovery document.
+  const holder: { baseUrl: string } = { baseUrl: '' };
+
   const handle = await startServer({
     'GET /sso': (req, res) => {
       const encoded = req.query.SAMLRequest;
@@ -388,6 +408,24 @@ export async function startMockSamlIdp(
         );
         return;
       }
+      // SAML Core §3.2.1: `Destination` on `RequestAbstractType` is optional,
+      // but a recipient that receives a message carrying one must check it
+      // names the endpoint the message actually arrived at — otherwise a
+      // request built for one IdP's /sso could be replayed at another IdP
+      // that happens to trust the same relying party. Absence is a
+      // deliberate choice, not an oversight: this family's own AuthnRequest
+      // builder never sets Destination, and there is nothing to compare
+      // against when it is missing, so an absent attribute is accepted
+      // rather than treated as a proxy for "wrong".
+      const destination = root.getAttribute('Destination');
+      const ownEndpoint = `${holder.baseUrl}/sso`;
+      if (destination !== null && destination !== ownEndpoint) {
+        res.statusCode = 400;
+        res.end(
+          `AuthnRequest Destination does not match this IdP's endpoint (SAML Core §3.2.1), expected ${ownEndpoint}, got ${destination}`,
+        );
+        return;
+      }
 
       const acsUrl =
         root.getAttribute('AssertionConsumerServiceURL') || undefined;
@@ -445,6 +483,8 @@ export async function startMockSamlIdp(
       res.end(autoSubmitForm(acsUrl, samlResponse, req.query.RelayState));
     },
   });
+
+  holder.baseUrl = handle.url;
 
   return {
     ...handle,

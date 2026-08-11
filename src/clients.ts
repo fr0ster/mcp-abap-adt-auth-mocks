@@ -174,6 +174,21 @@ export function authenticateClient(
   requireSecret: boolean,
 ): { auth: ClientAuth; client: UaaClient } | null {
   const auth = readClientAuth(req);
+  // Checked first, before the duplicate-method check and before any
+  // fallback to body credentials: a malformed Basic header (invalid base64,
+  // or a payload with no `:`) is its own distinct mistake, not license to
+  // try the body instead. Deferred to `readClientAuth`'s known-shaped
+  // finding and refused here, exactly as `conflict` and "unknown client"
+  // already are.
+  if (auth.malformedBasic) {
+    sendOAuthError(
+      res,
+      'invalid_client',
+      'the Authorization header is not a well-formed Basic credential (RFC 6749 §2.3.1): its payload is not valid base64, or does not decode to "id:secret"',
+      { usedAuthorizationHeader: true },
+    );
+    return null;
+  }
   if (auth.conflict) {
     sendOAuthError(
       res,
