@@ -5,9 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-08-12
 
-### Changed
+First release. Protocol-faithful mock authorization servers — UAA/OAuth2,
+OIDC, and a SAML 2.0 identity provider — for testing `@mcp-abap-adt`
+packages' authorization flows deterministically, without a live tenant.
+
+The package has not been published before, so everything below ships as one
+initial version. Nothing here changes a contract anyone was relying on.
+
+### Added
+
+- `startMockUaa` — authorization code, refresh with configurable rotation and
+  reuse detection, and the SAML bearer grant with a strict RFC 7522 mode.
+  Strict by default: an unregistered client, a wrong secret, or a code or
+  refresh token presented by a client other than the one it was issued to
+  are all refused the way a real server would refuse them.
+- `startMockOidc` — discovery, PKCE demanded at `/authorize` and verified at
+  `/token`, and `state` mirrored rather than judged.
+- `startMockSamlIdp` — signs with a per-instance certificate, returns an
+  auto-submitting form for the browser to deliver, and can violate one rule
+  at a time across twelve variants, independently verified against
+  `@node-saml/node-saml` where it checks the field and pinned as a canary
+  where it does not.
+- `visit` — a fake browser that follows redirects and submits forms, wired
+  into a strategy through `openUrl`.
+- `generateKeyMaterial` / `signXml` — per-instance RSA key material and
+  XML-DSig signing, exposed for building further test fixtures.
+- A README documenting the `visit` + `openUrl` wiring, what each mock
+  refuses by default, the SAML corruption-variant table (with the four rows
+  no independent verifier here judges), the two-step shape of assertion
+  replay, and what signature verification in this package does and does not
+  prove.
+
+### Strictness added while the pull request was under review
+
+Each of these was found by external review of the pull request, and each is
+a refusal the mock performs rather than a behaviour it offers. They are
+listed apart from the features above because they describe what the mocks
+will not accept.
 
 - `startMockOidc`'s `/token` now rejects a `code_verifier` that does not fit
   RFC 7636's `43*128unreserved` shape, refused as `invalid_request` before
@@ -48,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `acsUrls`, by exact byte-for-byte match — never origin or prefix. There
   is no default: omitting `acsUrls` entirely refuses **every**
   `AuthnRequest` with a `400`, since an IdP with no service-provider
-  metadata has no relying party to deliver to. **Breaking**: every existing
+  metadata has no relying party to deliver to. every existing
   call to `startMockSamlIdp` that expects a delivered assertion must now
   pass `acsUrls` naming its ACS.
 - `startMockSamlIdp`'s `GET /sso` now requires the inflated `AuthnRequest`
@@ -56,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IssueInstant` that parses as an `xsd:dateTime` (SAML Core §3.2.1,
   `RequestAbstractType`), refusing anything else with a `400` naming the
   missing or invalid attribute. Previously a missing `ID` silently became
-  an empty `InResponseTo` rather than being refused. **Breaking**: an
+  an empty `InResponseTo` rather than being refused. an
   `AuthnRequest` built without `IssueInstant` (or with a missing `ID` or a
   `Version` other than `"2.0"`) is now refused instead of answered.
 - `ID` is now additionally required to be a well-formed `xs:ID`
@@ -65,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were previously accepted (only non-emptiness was checked) and flowed
   straight into `InResponseTo`; both are now refused with a `400`. Only
   the ASCII subset of `NCName` is implemented — the full production's
-  non-ASCII `NameStartChar`/`NameChar` ranges are not. **Breaking**: an
+  non-ASCII `NameStartChar`/`NameChar` ranges are not. an
   `AuthnRequest` whose `ID` is non-empty but not an ASCII `NCName` is now
   refused instead of answered.
 - `IssueInstant`'s calendar is now validated, not just its lexical shape
@@ -77,7 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   survives unchanged — a genuine leap day (`2028-02-29T00:00:00Z`) is
   still accepted. Deliberately not implemented: the `xsd:dateTime`
   end-of-day form (`24:00:00`), leap seconds, and the calendar semantics
-  of a negative (BCE) year. **Breaking**: an `AuthnRequest` whose
+  of a negative (BCE) year. an `AuthnRequest` whose
   `IssueInstant` names a calendar date that does not exist is now refused
   instead of answered with a silently-normalised date.
 - `IssueInstant`'s `Z`/`±HH:MM` offset is now range-checked, not just
@@ -86,7 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `14` the minute must be `00` — which the old regex never expressed, so
   `+99:99` and `+14:01` both passed as long as the calendar portion was
   valid. `+14:00` and `-14:00` (the legal maximum and minimum) are still
-  accepted, as is a plain `Z`. **Breaking**: an `AuthnRequest` whose
+  accepted, as is a plain `Z`. an `AuthnRequest` whose
   `IssueInstant` offset is out of range is now refused instead of answered.
 - A malformed `Authorization: Basic` header — a payload that is not valid
   base64, or that decodes to a value with no `:` separator — is now refused
@@ -99,9 +135,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`usedAuthorizationHeader`) separately from whether it parsed
   (`malformedBasic`); `authenticateClient` refuses on `malformedBasic` before
   any fallback to body credentials and before the duplicate-method check.
-  **Breaking**: a token request carrying an unparsable `Authorization: Basic`
-  header alongside otherwise-valid body credentials is now refused instead of
-  authenticated via the body.
 - The `Basic` auth-scheme is now matched case-insensitively, and tolerates
   more than one space before its payload, per RFC 7235 §2.1's grammar
   (`auth-scheme 1*SP token68`, with `auth-scheme` a case-insensitive
@@ -112,10 +145,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed, left open for every casing but the exact string `Basic`. A bare
   `Basic` with no payload is treated as an attempted-but-malformed Basic
   header, consistent with that same fix, rather than as no attempt at all.
-  **Breaking**: a token request whose `Authorization` header names the
-  `Basic` scheme in any casing, or as a bare scheme with no payload, is now
-  handled as a Basic attempt (accepted if well-formed, refused before any
-  body fallback if not) instead of being ignored.
 - `startMockSamlIdp`'s `GET /sso` now checks the inflated `AuthnRequest`'s
   `Destination` attribute, when present, against the IdP's own `/sso`
   endpoint (SAML Core §3.2.1) and refuses a mismatch with a `400` — a
@@ -123,36 +152,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trusts the same relying party. `Destination` is optional on
   `RequestAbstractType`; an `AuthnRequest` that omits it is still accepted,
   by deliberate choice — this family's own `AuthnRequest` builder never sets
-  it, and there is nothing to compare against when it is missing. **Breaking**:
-  an `AuthnRequest` whose `Destination` names a different endpoint is now
-  refused instead of answered.
-
-## [0.1.0] - 2026-08-07
-
-First release. Protocol-faithful mock authorization servers — UAA/OAuth2,
-OIDC, and a SAML 2.0 identity provider — for testing `@mcp-abap-adt`
-packages' authorization flows deterministically, without a live tenant.
-
-### Added
-
-- `startMockUaa` — authorization code, refresh with configurable rotation and
-  reuse detection, and the SAML bearer grant with a strict RFC 7522 mode.
-  Strict by default: an unregistered client, a wrong secret, or a code or
-  refresh token presented by a client other than the one it was issued to
-  are all refused the way a real server would refuse them.
-- `startMockOidc` — discovery, PKCE demanded at `/authorize` and verified at
-  `/token`, and `state` mirrored rather than judged.
-- `startMockSamlIdp` — signs with a per-instance certificate, returns an
-  auto-submitting form for the browser to deliver, and can violate one rule
-  at a time across twelve variants, independently verified against
-  `@node-saml/node-saml` where it checks the field and pinned as a canary
-  where it does not.
-- `visit` — a fake browser that follows redirects and submits forms, wired
-  into a strategy through `openUrl`.
-- `generateKeyMaterial` / `signXml` — per-instance RSA key material and
-  XML-DSig signing, exposed for building further test fixtures.
-- A README documenting the `visit` + `openUrl` wiring, what each mock
-  refuses by default, the SAML corruption-variant table (with the four rows
-  no independent verifier here judges), the two-step shape of assertion
-  replay, and what signature verification in this package does and does not
-  prove.
+  it, and there is nothing to compare against when it is missing. One that
+  names a different endpoint is refused.
