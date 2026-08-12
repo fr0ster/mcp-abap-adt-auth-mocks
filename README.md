@@ -1,5 +1,7 @@
 # @mcp-abap-adt/auth-mocks
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+
 Protocol-faithful mock authorization servers (UAA/OAuth2, OIDC, SAML IdP) for
 testing `@mcp-abap-adt` packages.
 
@@ -47,18 +49,18 @@ default strategies (`browserCallbackStrategy`, `oidcCallbackStrategy`,
 `openUrl` with it instead of launching Chrome:
 
 ```ts
-import { startMockUaa, visit } from '@mcp-abap-adt/auth-mocks';
+import { startMockUaa, visit } from "@mcp-abap-adt/auth-mocks";
 import {
   AuthorizationCodeProvider,
   browserCallbackStrategy,
-} from '@mcp-abap-adt/auth-providers';
+} from "@mcp-abap-adt/auth-providers";
 
 const uaa = await startMockUaa();
 try {
   const provider = new AuthorizationCodeProvider({
     uaaUrl: uaa.url,
-    clientId: 'mock-client',
-    clientSecret: 'mock-secret',
+    clientId: "mock-client",
+    clientSecret: "mock-secret",
     authorization: browserCallbackStrategy({
       // openUrl's signature also carries a browser name and the bound
       // redirect URI, neither of which visit() needs — it only wants the
@@ -101,7 +103,7 @@ wrote the mistake:
   of being refused.
 - **`response_type` must be exactly `code`.** Missing or set to anything else
   (`token`, for instance), `/authorize` refuses it. Unlike the two checks
-  above, this falls *after* the trust boundary — `client_id` and
+  above, this falls _after_ the trust boundary — `client_id` and
   `redirect_uri` are already valid — so per RFC 6749 §4.1.2.1 it is reported
   **at the callback**: a `302` carrying `error` (`invalid_request` when
   absent, `unsupported_response_type` when present but wrong),
@@ -118,7 +120,7 @@ wrote the mistake:
   disagrees with the one Basic carries — refused even when every value
   agrees, because a body `client_secret` is itself a credential and
   presenting it alongside Basic is two credentials regardless of whether
-  they match. A bare, *agreeing* body `client_id` alongside Basic **is**
+  they match. A bare, _agreeing_ body `client_id` alongside Basic **is**
   permitted: RFC 6749 §3.2.1 lets a client "use the `client_id` request
   parameter to identify itself when sending requests to the token
   endpoint", and identification is not authentication — an agreeing
@@ -136,9 +138,9 @@ wrote the mistake:
   Basic could still get in on valid body credentials, and a malformed
   attempt against a client requiring Basic was answered `invalid_client` as
   a plain unknown-client 400 rather than the 401 RFC 6749 §5.2 requires once
-  Basic was attempted. `readClientAuth` now tracks the header's *presence*
+  Basic was attempted. `readClientAuth` now tracks the header's _presence_
   (`usedAuthorizationHeader`, true the moment a request carries the `Basic`
-  auth-scheme) separately from whether it could be *parsed*
+  auth-scheme) separately from whether it could be _parsed_
   (`malformedBasic`); `authenticateClient` refuses on `malformedBasic` with
   its own `invalid_client` message, before any fallback to body credentials
   and before the duplicate-method check above — a malformed attempt is its
@@ -257,6 +259,55 @@ wrote the mistake:
   deliberate choice, not oversight: this family's own `AuthnRequest` builder
   never sets it, and there is nothing to compare against when it is missing.
 
+## Options reference
+
+Every option is optional; the defaults are what a test gets by passing nothing.
+
+### `startMockUaa(options?: UaaOptions)` and `startMockOidc(options?: OidcOptions)`
+
+`OidcOptions` extends `UaaOptions`, so both accept everything below. Fields
+inherited but inert for OIDC are marked.
+
+| Option                       | Default                       | Meaning                                                                                                                              |
+| ---------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `clients`                    | one client, see below         | Registered clients: `UaaClient[]`, each `{ clientId, clientSecret, redirectUris? }`.                                                 |
+| `clientId` / `clientSecret`  | `mock-client` / `mock-secret` | Shorthand for a single registered client. Ignored when `clients` is given.                                                           |
+| `redirectUris` (per client)  | `[DEFAULT_REDIRECT_URI]`      | Permitted redirect URIs, compared byte-for-byte. A registered list **replaces** the default, it does not extend it.                  |
+| `codeLifetimeMs`             | `2000`                        | How long an authorization code stays redeemable. Short so an expiry test need not wait.                                              |
+| `accessTokenLifetimeSeconds` | `3600`                        | `exp` − `iat` on the minted JWT.                                                                                                     |
+| `authorize`                  | `'allow'`                     | `'deny'` redirects to the callback with `error=access_denied`. Inert for OIDC.                                                       |
+| `requireClientSecret`        | `true`                        | `false` skips the secret comparison; the registry lookup still refuses an unregistered client.                                       |
+| `rotateRefreshTokens`        | `true`                        | Issue a new refresh token per refresh and refuse the superseded one. Inert for OIDC.                                                 |
+| `failRefresh`                | `false`                       | Refuse every refresh with `invalid_grant`. Inert for OIDC.                                                                           |
+| `samlBearer`                 | `'strict'`                    | `'strict'` enforces RFC 7522 §2.1, `'lenient'` accepts what the family sends today, `'off'` disables the grant. Inert for OIDC.      |
+| `state` (OIDC only)          | `'mirror'`                    | `'wrongState'` returns a different value, `'missingState'` omits it. The mock never _validates_ `state` — that is the client's duty. |
+
+`DEFAULT_REDIRECT_URI` is exported, so a test registering an extra URI
+alongside the default need not retype the literal.
+
+### `startMockSamlIdp(options?: SamlOptions)`
+
+| Option     | Default      | Meaning                                                                                                                                                                                  |
+| ---------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `acsUrls`  | none         | Permitted `AssertionConsumerServiceURL` values, compared byte-for-byte. **With none registered the IdP refuses every `AuthnRequest`** — no service-provider metadata, no single sign-on. |
+| `variant`  | `'valid'`    | Which single field of the response to corrupt; see the variants table.                                                                                                                   |
+| `issuer`   | `'mock-idp'` | The `Issuer` on both the `Response` and the `Assertion`.                                                                                                                                 |
+| `audience` | `'mock-sp'`  | The `Audience` inside `AudienceRestriction`.                                                                                                                                             |
+
+`SamlVariant` is exported for typing a variant table of your own.
+
+### Handles and results
+
+`startServer`, `startMockUaa`, `startMockOidc` and `startMockSamlIdp` all
+resolve to a `MockHandle`: `url`, `port`, `requests` — every
+`RecordedRequest` the mock received, oldest first, carrying `method`, `path`,
+`query`, `headers`, `body` and `raw` — and `close()`, which resolves only
+once the port is actually free. `MockUaa` adds
+`mintExpiredAccessWithValidRefresh()`; `MockSamlIdp` adds `certificatePem`,
+`setVariant()`, `lastAssertionId()` and `repeatLastAssertion()`.
+
+`visit(url)` resolves to a `VisitResult`: `finalUrl`, `status`, `body`.
+
 ## Mock UAA (`startMockUaa`)
 
 Authorization code grant at `GET /oauth/authorize` / `POST /oauth/token`,
@@ -306,7 +357,7 @@ Strict by default here too: the inflated request's document element must be
 the local name and the namespace, not either alone — or `/sso` refuses it
 with a `400`. The same reasoning the RFC 7522 assertion check already
 applies to the SAML bearer grant (`uaa.ts`'s `rejectNonAssertion`): what
-matters is the *document element*, not whether the attributes this handler
+matters is the _document element_, not whether the attributes this handler
 reads happen to decode somewhere in the document. A `samlp:LogoutRequest`
 correctly namespaced but wrongly named, or a document in the right shape but
 the wrong namespace, are both refused.
@@ -346,6 +397,7 @@ Once the document element checks out, four more rules apply, in order:
    round-trip never read it, so `+99:99` and `+14:01` both passed as long as
    the calendar portion was valid; `+14:00` and `-14:00`, the legal extremes,
    are still accepted, as is a plain `Z`.
+
 2. **`Destination`, if present, must name this IdP's own `/sso` endpoint**
    (SAML Core §3.2.1). A recipient that receives a message carrying a
    `Destination` must check it names the endpoint the message actually
@@ -362,7 +414,11 @@ Once the document element checks out, four more rules apply, in order:
    comparison, never origin or prefix matching. There is no default:
 
    ```ts
-   const acs = await startServer({ 'POST /callback': (req, res) => { /* ... */ } });
+   const acs = await startServer({
+     "POST /callback": (req, res) => {
+       /* ... */
+     },
+   });
    const idp = await startMockSamlIdp({
      acsUrls: [`${acs.url}/callback`],
    });
@@ -385,20 +441,20 @@ where it inspects that field, or "structural (canary)" where it does not —
 read directly from the installed library's source
 (`src/__tests__/samlVerification.test.ts`), not assumed from its docs.
 
-| Variant | What changes | Verified by |
-|---|---|---|
-| `valid` | (nothing — the baseline) | node-saml: accepted |
-| `unsigned` | no `<Signature>` at all | node-saml: rejected (`Invalid signature`) |
-| `wrongKey` | signed with an unrelated key pair | node-saml: rejected (`Invalid signature`) |
-| `tamperedAfterSign` | signed content mutated after signing | node-saml: rejected (`Invalid signature`) |
-| `expired` | `NotOnOrAfter` in the past | node-saml: rejected |
-| `notYetValid` | `NotBefore` in the future | node-saml: rejected |
-| `wrongAudience` | `Audience` does not match | node-saml: rejected |
-| `wrongInResponseTo` | `InResponseTo` names no live request | node-saml: rejected |
-| `statusFailure` | `<samlp:Status>` reports failure | **structural (canary)** — see below |
-| `wrongIssuer` | `Issuer` does not match | **structural (canary)** — see below |
-| `wrongDestination` | `Response@Destination` does not match the ACS | **structural (canary)** — see below |
-| `wrongRecipient` | `SubjectConfirmationData@Recipient` does not match the ACS | **structural (canary)** — see below |
+| Variant             | What changes                                               | Verified by                               |
+| ------------------- | ---------------------------------------------------------- | ----------------------------------------- |
+| `valid`             | (nothing — the baseline)                                   | node-saml: accepted                       |
+| `unsigned`          | no `<Signature>` at all                                    | node-saml: rejected (`Invalid signature`) |
+| `wrongKey`          | signed with an unrelated key pair                          | node-saml: rejected (`Invalid signature`) |
+| `tamperedAfterSign` | signed content mutated after signing                       | node-saml: rejected (`Invalid signature`) |
+| `expired`           | `NotOnOrAfter` in the past                                 | node-saml: rejected                       |
+| `notYetValid`       | `NotBefore` in the future                                  | node-saml: rejected                       |
+| `wrongAudience`     | `Audience` does not match                                  | node-saml: rejected                       |
+| `wrongInResponseTo` | `InResponseTo` names no live request                       | node-saml: rejected                       |
+| `statusFailure`     | `<samlp:Status>` reports failure                           | **structural (canary)** — see below       |
+| `wrongIssuer`       | `Issuer` does not match                                    | **structural (canary)** — see below       |
+| `wrongDestination`  | `Response@Destination` does not match the ACS              | **structural (canary)** — see below       |
+| `wrongRecipient`    | `SubjectConfirmationData@Recipient` does not match the ACS | **structural (canary)** — see below       |
 
 **Four of the twelve rows have no independent judge here**, for two distinct
 reasons, both confirmed by reading `node_modules/@node-saml/node-saml`'s
@@ -407,11 +463,11 @@ source rather than assumed from its documentation:
 - `wrongDestination` and `wrongRecipient` — node-saml's response validation
   never reads `Destination` or `Recipient` at all. Its source shows
   `Recipient` does not occur outside test fixtures, and `Destination` occurs
-  only in the code that *builds* an outgoing request, never in the code that
-  *validates* an incoming response.
+  only in the code that _builds_ an outgoing request, never in the code that
+  _validates_ an incoming response.
 - `statusFailure` and `wrongIssuer` — node-saml only reads the top-level
   `<samlp:Status>` inside the branch guarded by `if (!("Assertion" in
-  response))` — that is, whenever *any* `Assertion` element is present in
+response))` — that is, whenever _any_ `Assertion` element is present in
   the response at all, signed or not, not specifically because it is
   validly signed — and only compares `idpIssuer` against the message on the
   **logout** path (`verifyIssuer`, called from `verifyLogoutRequest` /
@@ -436,7 +492,7 @@ exactly why replay is dangerous, and exactly why no off-the-shelf verifier
 rejects one on sight. Remembering which assertion IDs have already been
 consumed is the relying party's job, not the identity provider's, so this
 package cannot offer "the replay variant" the way it offers `wrongAudience`
-or `expired`. What it offers instead is the two-step shape that *makes*
+or `expired`. What it offers instead is the two-step shape that _makes_
 replay dangerous:
 
 ```ts
@@ -457,11 +513,11 @@ validation strategy is responsible for building and is what this mock exists
 to let it be tested against.
 
 There is a trap immediately next door that looks like replay detection but
-is not: node-saml's *request*-ID cache is one-shot (`removeAsync` on
+is not: node-saml's _request_-ID cache is one-shot (`removeAsync` on
 `InResponseTo` after a successful validation), so a **second, freshly-minted**
 assertion answering the same, already-consumed `AuthnRequest` is rejected
 too — for a reason that has nothing to do with the assertion ID repeating.
-`src/__tests__/samlVerification.test.ts` covers this with a *fresh* second
+`src/__tests__/samlVerification.test.ts` covers this with a _fresh_ second
 assertion specifically so the rejection cannot be mistaken for replay
 detection.
 

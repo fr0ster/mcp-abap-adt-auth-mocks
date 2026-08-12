@@ -4,8 +4,15 @@
   "description": "Protocol-faithful mock authorization servers (UAA/OAuth2, OIDC, SAML IdP) for testing @mcp-abap-adt packages",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
-  "engines": { "node": ">=18.2.0" },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.2.0"
+  },
   "scripts": {
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "lint": "npx biome check --write src",
@@ -31,6 +38,28 @@
     "ts-jest": "^29.2.5",
     "typescript": "^5.9.2"
   },
-  "publishConfig": { "access": "public" },
-  "license": "MIT"
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "Oleksii Kyslytsia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/mcp-abap-adt-auth-mocks.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fr0ster/mcp-abap-adt-auth-mocks/issues"
+  },
+  "homepage": "https://github.com/fr0ster/mcp-abap-adt-auth-mocks#readme",
+  "keywords": [
+    "mock",
+    "oauth2",
+    "oidc",
+    "saml",
+    "pkce",
+    "testing",
+    "sap",
+    "abap",
+    "adt"
+  ]
 }
