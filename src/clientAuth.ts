@@ -12,21 +12,34 @@ export interface ClientAuth {
   clientId?: string;
   clientSecret?: string;
   /**
-   * True as soon as an `Authorization: Basic ` header is present, whether or
+   * True as soon as an `Authorization: Basic` header is present, whether or
    * not it could be parsed. Basic having been *attempted* — not merely
    * having *succeeded* — is what RFC 6749 §5.2's 401-with-`WWW-Authenticate`
    * rule is conditioned on: a client that sent a malformed Basic header
    * still authenticated "via the header" in the sense that clause cares
    * about.
+   *
+   * `auth-scheme` is matched case-insensitively (RFC 7235 §2.1: it is a
+   * `token`, and tokens in this grammar are case-insensitive keywords —
+   * `basic`, `BASIC` and `BaSiC` are the same scheme), and one-or-more
+   * spaces before the payload are tolerated (RFC 7235's grammar is
+   * `auth-scheme 1*SP token68`, not exactly one). A bare `Basic` with no
+   * payload at all still counts as an attempt — see `malformedBasic` below.
    */
   usedAuthorizationHeader: boolean;
   /**
    * True when an `Authorization: Basic` header was present but could not be
-   * read as a credential: its payload is not valid base64, or it decodes to
-   * a value with no `:` separator. This is refused before any fallback to
-   * body credentials and before the duplicate-method check below — a
-   * malformed attempt is its own mistake, not a reason to try the body
-   * instead. See `authenticateClient` in `./clients`.
+   * read as a credential: its payload is not valid base64, it decodes to a
+   * value with no `:` separator, or there is no payload at all (a bare
+   * `Basic`, or `Basic` followed only by spaces). The bare-scheme case is
+   * deliberately treated as an attempt rather than as "no Basic": a client
+   * that sends the scheme keyword names Basic as its method, and the
+   * alternative — quietly falling through to the body — is exactly the hole
+   * a malformed-payload Basic header closed in the previous round, reopened
+   * for a caller that sends the scheme and nothing else. This is refused
+   * before any fallback to body credentials and before the duplicate-method
+   * check below — a malformed attempt is its own mistake, not a reason to
+   * try the body instead. See `authenticateClient` in `./clients`.
    */
   malformedBasic: boolean;
   /**
@@ -81,6 +94,19 @@ function decodeFormComponent(value: string): string {
 const BASE64_SHAPE =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
+/**
+ * Matches the `Basic` auth-scheme per RFC 7235 §2.1/§2 grammar
+ * (`credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ]`):
+ * the scheme keyword itself is case-insensitive, and when a payload follows
+ * it is separated by one or more spaces, not exactly one. Anchored at both
+ * ends so a different scheme that merely starts with these letters — e.g.
+ * `Basicish xyz` — does not match. Capture group 1 is the payload; it is
+ * `undefined` for a bare `Basic` and `''` for `Basic` followed only by
+ * spaces, both of which `readClientAuth` treats as an attempted-but-empty
+ * payload (see `malformedBasic`'s doc comment).
+ */
+const BASIC_SCHEME = /^basic(?:[ ]+(.*))?$/i;
+
 export function readClientAuth(req: RecordedRequest): ClientAuth {
   const header = req.headers.authorization ?? '';
   let basicId: string | undefined;
@@ -89,10 +115,15 @@ export function readClientAuth(req: RecordedRequest): ClientAuth {
   // Presence, not success: an attempt that turns out unparsable still
   // attempted Basic, and RFC 6749 §5.2's 401-with-WWW-Authenticate rule is
   // conditioned on the attempt, not on whether it happened to parse.
-  const usedAuthorizationHeader = header.startsWith('Basic ');
+  const basicMatch = BASIC_SCHEME.exec(header);
+  const usedAuthorizationHeader = basicMatch !== null;
 
-  if (usedAuthorizationHeader) {
-    const payload = header.slice(6);
+  if (basicMatch) {
+    // A bare `Basic` (group 1 undefined) is treated the same as an empty
+    // payload: BASE64_SHAPE accepts '' (zero groups), Buffer.from('', …)
+    // decodes to '', and the missing ':' below flags it malformed — no
+    // special case needed beyond defaulting to ''.
+    const payload = basicMatch[1] ?? '';
     if (BASE64_SHAPE.test(payload)) {
       const decoded = Buffer.from(payload, 'base64').toString('utf8');
       const sep = decoded.indexOf(':');

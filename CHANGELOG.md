@@ -102,6 +102,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Breaking**: a token request carrying an unparsable `Authorization: Basic`
   header alongside otherwise-valid body credentials is now refused instead of
   authenticated via the body.
+- The `Basic` auth-scheme is now matched case-insensitively, and tolerates
+  more than one space before its payload, per RFC 7235 §2.1's grammar
+  (`auth-scheme 1*SP token68`, with `auth-scheme` a case-insensitive
+  `token`). `Authorization: basic …` — or any other casing — used to look
+  like no Basic header at all (`header.startsWith('Basic ')`), so
+  `usedAuthorizationHeader` stayed `false` and the request fell through to
+  body credentials: exactly the fallback hole the malformed-Basic fix above
+  closed, left open for every casing but the exact string `Basic`. A bare
+  `Basic` with no payload is treated as an attempted-but-malformed Basic
+  header, consistent with that same fix, rather than as no attempt at all.
+  **Breaking**: a token request whose `Authorization` header names the
+  `Basic` scheme in any casing, or as a bare scheme with no payload, is now
+  handled as a Basic attempt (accepted if well-formed, refused before any
+  body fallback if not) instead of being ignored.
 - `startMockSamlIdp`'s `GET /sso` now checks the inflated `AuthnRequest`'s
   `Destination` attribute, when present, against the IdP's own `/sso`
   endpoint (SAML Core §3.2.1) and refuses a mismatch with a `400` — a

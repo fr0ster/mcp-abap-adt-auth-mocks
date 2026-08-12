@@ -723,6 +723,72 @@ describe('mock UAA', () => {
     }
   });
 
+  // Finding (this review, PR #1): RFC 7235 §2.1 makes auth-scheme
+  // case-insensitive, so `Authorization: basic …` names the same scheme as
+  // `Basic …`. `header.startsWith('Basic ')` missed every other casing —
+  // the request looked like it carried no Basic header at all.
+  it('exchanges a code when the Authorization header uses a lowercase "basic" scheme', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const redirectUri = 'http://localhost:61001/callback';
+      const code = await getCode(uaa.url, redirectUri);
+      const lowercaseBasic = `basic ${Buffer.from('mock-client:mock-secret').toString('base64')}`;
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: lowercaseBasic,
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { access_token: string };
+      expect(json.access_token.split('.')).toHaveLength(3);
+    } finally {
+      await uaa.close();
+    }
+  });
+
+  // The other half of the same finding: a lowercase "basic" scheme with an
+  // unparsable payload must be refused exactly like a canonically-cased one
+  // — not, as under the pre-fix code, silently ignored in favour of the
+  // valid body credentials sitting right next to it. A 200 here would mean
+  // the request was authenticated via the body, the exact hole this fix
+  // closes.
+  it('refuses a lowercase "basic" header with a malformed payload even when the body carries valid credentials', async () => {
+    const uaa = await startMockUaa();
+    try {
+      const res = await fetch(`${uaa.url}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: 'basic !!!',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: 'irrelevant',
+          redirect_uri: 'http://localhost:61001/callback',
+          client_id: 'mock-client',
+          client_secret: 'mock-secret',
+        }).toString(),
+      });
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).toMatch(/Basic/);
+      const json = (await res.json()) as {
+        error: string;
+        error_description?: string;
+      };
+      expect(json.error).toBe('invalid_client');
+      expect(json.error_description).toMatch(/not a well-formed Basic/);
+    } finally {
+      await uaa.close();
+    }
+  });
+
   // The OIDC twin is oidc.test.ts's 'refuses an authorize request with no
   // redirect_uri at all'; this mock had no counterpart, and deleting
   // uaa.ts:114-118 turns this into new URL(undefined) throwing, which the

@@ -137,8 +137,8 @@ wrote the mistake:
   attempt against a client requiring Basic was answered `invalid_client` as
   a plain unknown-client 400 rather than the 401 RFC 6749 §5.2 requires once
   Basic was attempted. `readClientAuth` now tracks the header's *presence*
-  (`usedAuthorizationHeader`, true the moment a request begins with
-  `Basic `) separately from whether it could be *parsed*
+  (`usedAuthorizationHeader`, true the moment a request carries the `Basic`
+  auth-scheme) separately from whether it could be *parsed*
   (`malformedBasic`); `authenticateClient` refuses on `malformedBasic` with
   its own `invalid_client` message, before any fallback to body credentials
   and before the duplicate-method check above — a malformed attempt is its
@@ -146,6 +146,19 @@ wrote the mistake:
   `Buffer.from(…, 'base64')` is lenient (it silently strips characters
   outside the alphabet rather than failing), the payload's shape is checked
   explicitly first, against RFC 4648 §4's standard base64 grammar.
+- **The `Basic` auth-scheme is matched case-insensitively**, and tolerates
+  more than one space before its payload: RFC 7235 §2.1's grammar is
+  `auth-scheme 1*SP token68`, and `auth-scheme` is a `token` — a
+  case-insensitive keyword — so `basic`, `BASIC` and `BaSiC` all name the
+  same scheme, and one-or-more spaces (not exactly one) separate it from the
+  payload. `Authorization: basic …` used to look like no Basic header at
+  all, so `usedAuthorizationHeader` stayed `false` and the request fell
+  through to body credentials — the same hole the malformed-Basic fix above
+  closed, left open for every casing but the exact string `Basic`. A bare
+  `Basic` with no payload at all is treated as an attempted-but-malformed
+  Basic header, not as "no Basic was attempted", for the same reason: the
+  alternative would let a client send the bare scheme plus valid body
+  credentials and authenticate via the body.
 - **A code or a refresh token is bound to the client it was issued to.**
   Register two clients and try to redeem the first client's code, or its
   refresh token, while authenticated as the second, and the mock answers

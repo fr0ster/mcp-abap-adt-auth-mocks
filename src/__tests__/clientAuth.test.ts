@@ -182,4 +182,118 @@ describe('readClientAuth', () => {
     expect(r.malformedBasic).toBe(true);
     expect(r.conflict).toBe(false);
   });
+
+  // Finding (this review, PR #1): RFC 7235 §2.1 makes auth-scheme a `token`,
+  // and tokens in this grammar are case-insensitive keywords, so
+  // `Authorization: basic …` names the same scheme as `Basic …`. The old
+  // `header.startsWith('Basic ')` check missed this entirely — a lowercase
+  // scheme looked like no Basic header at all, so usedAuthorizationHeader
+  // stayed false and the request fell through to body credentials, the
+  // exact hole the malformed-Basic guard above closed for the wrong casing.
+  describe('scheme case and spacing (RFC 7235 §2.1)', () => {
+    it('reads client_secret_basic when the scheme is lowercase "basic"', () => {
+      const basic = Buffer.from('cid:secret').toString('base64');
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: `basic ${basic}` },
+      });
+      expect(r).toMatchObject({
+        clientId: 'cid',
+        clientSecret: 'secret',
+        usedAuthorizationHeader: true,
+        malformedBasic: false,
+      });
+    });
+
+    it('reads client_secret_basic when the scheme is mixed-case "BaSiC"', () => {
+      const basic = Buffer.from('cid:secret').toString('base64');
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: `BaSiC ${basic}` },
+      });
+      expect(r).toMatchObject({
+        clientId: 'cid',
+        clientSecret: 'secret',
+        usedAuthorizationHeader: true,
+        malformedBasic: false,
+      });
+    });
+
+    // RFC 7235's grammar is `auth-scheme 1*SP token68` — one or more
+    // spaces, not exactly one. A client that pads the separator is still
+    // well-formed.
+    it('tolerates more than one space between the scheme and the payload', () => {
+      const basic = Buffer.from('cid:secret').toString('base64');
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: `Basic   ${basic}` },
+      });
+      expect(r).toMatchObject({
+        clientId: 'cid',
+        clientSecret: 'secret',
+        usedAuthorizationHeader: true,
+        malformedBasic: false,
+      });
+    });
+
+    // The lowercase scheme must not only be *recognised* — it must feed the
+    // same malformed-payload refusal a canonically-cased header does.
+    // `readClientAuth` itself still reports the body's client_id/secret
+    // here (it always exposes both halves; refusing on `malformedBasic`
+    // before ever reading them is `authenticateClient`'s job in
+    // `clients.ts`) — the full "does not authenticate via the body" claim
+    // is proved end-to-end in uaa.test.ts's matching case, which observes
+    // a 401 rather than a 200.
+    it('flags malformedBasic for a lowercase "basic" header with an unparsable payload', () => {
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: 'basic !!!' },
+        body: { client_id: 'cid', client_secret: 'secret' },
+      });
+      expect(r.usedAuthorizationHeader).toBe(true);
+      expect(r.malformedBasic).toBe(true);
+    });
+
+    // Decision: a bare `Basic` — the scheme with no payload at all — is
+    // treated as an attempted-but-malformed Basic header, not as "no Basic
+    // was attempted". The alternative (treating it as absent) would let a
+    // client send exactly this plus valid body credentials and authenticate
+    // via the body, reopening the fallback hole the malformed-Basic guard
+    // exists to close, just for an empty payload instead of an invalid one.
+    it('flags malformedBasic, and usedAuthorizationHeader, for a bare "Basic" scheme with no payload', () => {
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: 'Basic' },
+        body: { client_id: 'cid', client_secret: 'secret' },
+      });
+      expect(r.usedAuthorizationHeader).toBe(true);
+      expect(r.malformedBasic).toBe(true);
+    });
+
+    // Same decision, reached via trailing spaces instead of no space at
+    // all: `Basic   ` (scheme, spaces, nothing else) has a payload of ''
+    // once the separator is consumed, which is exactly the bare case above.
+    it('flags malformedBasic for "Basic" followed only by spaces', () => {
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: 'Basic   ' },
+      });
+      expect(r.usedAuthorizationHeader).toBe(true);
+      expect(r.malformedBasic).toBe(true);
+    });
+
+    // Anchoring proof: a scheme that merely starts with the same letters —
+    // not "Basic" plus a separator — is a different scheme and must not be
+    // recognised as Basic at all.
+    it('does not treat a scheme that only starts with "basic" as Basic', () => {
+      const r = readClientAuth({
+        ...base,
+        headers: { authorization: 'Basicish xyz' },
+        body: { client_id: 'cid', client_secret: 'secret' },
+      });
+      expect(r.usedAuthorizationHeader).toBe(false);
+      expect(r.malformedBasic).toBe(false);
+      expect(r.clientId).toBe('cid');
+    });
+  });
 });
