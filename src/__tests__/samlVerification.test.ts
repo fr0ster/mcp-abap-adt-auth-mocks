@@ -253,6 +253,13 @@ describe('an independent verifier judges the mock', () => {
         const payload = await s.deliver();
         const xml = Buffer.from(payload, 'base64').toString('utf8');
         assertCorrupted(xml, s);
+        // `resolves.toBeDefined()` is satisfied by a resolved value of
+        // `null` too, so it would stay green even if a future node-saml
+        // answered a corrupted response with a null profile instead of
+        // throwing. Asserting the NameID the mock actually put in the
+        // assertion (`<saml:NameID>mock-user</saml:NameID>`, see saml.ts)
+        // proves the response was genuinely parsed and accepted, not merely
+        // resolved.
         await expect(
           freshVerifier(
             s.idp.certificatePem,
@@ -260,7 +267,7 @@ describe('an independent verifier judges the mock', () => {
           ).validatePostResponseAsync({
             SAMLResponse: payload,
           }),
-        ).resolves.toBeDefined();
+        ).resolves.toMatchObject({ profile: { nameID: 'mock-user' } });
       } finally {
         await s.close();
       }

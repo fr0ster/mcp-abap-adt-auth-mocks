@@ -259,6 +259,90 @@ describe('visit', () => {
       await expect(visit(`${s.url}/loop`)).rejects.toThrow(
         /too many redirects/i,
       );
+      // MAX_REDIRECTS is 10 and is not exported, so this pins the literal
+      // the constant currently holds rather than importing it. A cap whose
+      // value nothing checks is the same class of gap as an untested rule:
+      // `hop <= MAX_REDIRECTS` would let this reach 11 without failing.
+      expect(s.requests.length).toBe(10);
+    } finally {
+      await s.close();
+    }
+  });
+
+  // README: "when it lands on an auto-submitting HTML form... it submits
+  // that form too" — not any POST form. A page a consumer's callback might
+  // legitimately serve, containing a POST form nobody told the page to
+  // submit, must come back as a result rather than be posted.
+  it('returns a page with a POST form but no auto-submit, rather than submitting it', async () => {
+    const s = await startServer({
+      'GET /page': (_r, res) => {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(
+          `<html><body>
+           <form method="post" action="/acs">
+             <input type="hidden" name="SAMLResponse" value="PHNhbWw+"/>
+           </form></body></html>`,
+        );
+      },
+      'POST /acs': (_r, res) => res.end('should not be reached'),
+    });
+    try {
+      const result = await visit(`${s.url}/page`);
+      expect(result.finalUrl).toBe(`${s.url}/page`);
+      expect(result.status).toBe(200);
+      expect(result.body).toContain('<form method="post" action="/acs">');
+    } finally {
+      await s.close();
+    }
+  });
+
+  // Proves the rule looks for a submit() *call*, not merely an onload
+  // handler's presence. A page whose onload does something else entirely
+  // must not be treated as auto-submitting.
+  it('does not submit a POST form whose onload handler never calls submit()', async () => {
+    const s = await startServer({
+      'GET /page': (_r, res) => {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(
+          `<html><body onload="console.log('loaded')">
+           <form method="post" action="/acs">
+             <input type="hidden" name="SAMLResponse" value="PHNhbWw+"/>
+           </form></body></html>`,
+        );
+      },
+      'POST /acs': (_r, res) => res.end('should not be reached'),
+    });
+    try {
+      const result = await visit(`${s.url}/page`);
+      expect(result.finalUrl).toBe(`${s.url}/page`);
+      expect(result.status).toBe(200);
+    } finally {
+      await s.close();
+    }
+  });
+
+  // Proves the rule looks specifically inside the onload handler, not
+  // anywhere in the page. A `submit()` call sitting in a <script> block, never
+  // wired to onload, is not the signal the IdP emits and must not trigger one.
+  it('does not submit a POST form when submit() appears outside of onload', async () => {
+    const s = await startServer({
+      'GET /page': (_r, res) => {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(
+          `<html><body>
+           <form method="post" action="/acs">
+             <input type="hidden" name="SAMLResponse" value="PHNhbWw+"/>
+           </form>
+           <script>function maybeSubmit() { document.forms[0].submit(); }</script>
+           </body></html>`,
+        );
+      },
+      'POST /acs': (_r, res) => res.end('should not be reached'),
+    });
+    try {
+      const result = await visit(`${s.url}/page`);
+      expect(result.finalUrl).toBe(`${s.url}/page`);
+      expect(result.status).toBe(200);
     } finally {
       await s.close();
     }

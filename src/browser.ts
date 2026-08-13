@@ -35,11 +35,30 @@ function decodeEntities(value: string): string {
     .replace(/&amp;/g, '&');
 }
 
+/**
+ * True when the page's `<body onload>` calls a form's `submit()`, the signal
+ * the SAML IdP's `autoSubmitForm` (src/saml.ts) emits and the README
+ * documents: `<body onload="document.forms[0].submit()">`. Deliberately
+ * narrow — a real browser submits a POST form only on a user action or a
+ * script, and the only script this package's IdP ever runs is this one, so
+ * matching it is enough without guessing at a broader heuristic. A `submit()`
+ * call elsewhere on the page (a `<script>` block never wired to `onload`) is
+ * not this signal and must not trigger a post.
+ */
+function hasAutoSubmit(html: string): boolean {
+  const body = /<body[^>]*>/i.exec(html);
+  if (!body) return false;
+  const onload = /\bonload=["']([^"']*)["']/i.exec(body[0]);
+  if (!onload) return false;
+  return /\.submit\(\s*\)/.test(onload[1]);
+}
+
 /** Extracts a form's action and its hidden inputs, if the page is one. */
 function parseForm(
   html: string,
   base: string,
 ): { action: string; fields: Record<string, string> } | null {
+  if (!hasAutoSubmit(html)) return null;
   const form = /<form[^>]*method=["']post["'][^>]*>([\s\S]*?)<\/form>/i.exec(
     html,
   );
@@ -71,7 +90,7 @@ export async function visit(url: string): Promise<VisitResult> {
   // very first request always is.
   let pendingBody: string | undefined;
 
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+  for (let hop = 0; hop < MAX_REDIRECTS; hop++) {
     const res = await fetch(
       current,
       pendingBody === undefined

@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-12
+
+Patch release. Three items parked during 0.1.0's review, none changing this
+package's public API.
+
+### Changed
+
+- **`visit` now submits only an auto-submitting form, matching the README's
+  documented contract.** Previously it submitted *any* `<form method="post">`
+  it landed on, regardless of whether the page auto-submitted it. It now
+  submits a POST form only when the page also carries the auto-submit signal
+  the SAML IdP actually emits — a `submit()` call inside `<body onload="…">`
+  — and otherwise returns that page as the `VisitResult`, unposted. **A
+  consumer relying on the old, lenient behaviour** — a callback page carrying
+  a POST form with no `onload` auto-submit, that was previously posted
+  anyway — must now either add the auto-submit script the real SAML POST
+  binding uses, or submit the form itself (e.g. via a follow-up `fetch` to
+  `result.body`'s form action) rather than relying on `visit` to do it.
+- `visit`'s redirect cap now permits exactly the 10 hops `MAX_REDIRECTS`
+  names, not 11: the loop bound was `hop <= MAX_REDIRECTS`, off by one
+  against the constant's own name.
+
+### Fixed
+
+- `src/__tests__/samlVerification.test.ts`'s four canaries for fields
+  `@node-saml/node-saml` does not check (`wrongDestination`,
+  `wrongRecipient`, `statusFailure`, `wrongIssuer`) now assert on the
+  resolved profile's `nameID`, rather than `resolves.toBeDefined()` — an
+  assertion a null-profile resolution would also have satisfied, silently
+  losing coverage if a future version of the verifier ever started
+  answering a corrupted response that way instead of throwing.
+
 ## [0.1.0] - 2026-08-12
 
 First release. Protocol-faithful mock authorization servers — UAA/OAuth2,

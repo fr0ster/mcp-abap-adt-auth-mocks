@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/auth-mocks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Protocol-faithful mock authorization servers (UAA/OAuth2, OIDC, SAML IdP) for testing @mcp-abap-adt packages",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
