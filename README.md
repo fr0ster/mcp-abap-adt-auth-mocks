@@ -573,3 +573,28 @@ prove the mock IdP is a faithful stand-in for a real one. Concretely:
   rejects what it checks, not evidence the mock's SAML profile matches a
   live IdP byte-for-byte. **Live testing against a real identity provider
   remains necessary** and is not made obsolete by these tests passing.
+
+## License
+
+**GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`).
+Earlier published versions were MIT and stay MIT — a licence change is not
+retroactive.
+
+Copyright © 2026 Oleksii Kyslytsia
+
+This library is free software: you can redistribute it and/or modify it under the
+terms of the GNU Lesser General Public License as published by the Free Software
+Foundation, version 3.
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See the GNU Lesser General Public License for more details.
+
+Both texts ship with the package and both are needed: [`LICENSE`](LICENSE) is the
+LGPL, [`COPYING`](COPYING) is the GPL it is written on top of, since the LGPL is a
+set of additional permissions over the GPL and cannot be read alone.
+
+**What this means if you depend on this package.** Linking it into your own
+program — importing it, as every consumer of an npm package does — does not put
+your program under the LGPL. What the licence asks is that changes *to this
+library* stay free, and that your users can replace it with their own build.

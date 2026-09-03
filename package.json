@@ -8,7 +8,8 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "COPYING"
   ],
   "engines": {
     "node": ">=18.2.0"
@@ -41,7 +42,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "author": "Oleksii Kyslytsia",
   "repository": {
     "type": "git",
