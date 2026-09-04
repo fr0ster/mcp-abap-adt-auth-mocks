@@ -52,6 +52,16 @@ export interface SamlOptions {
    * party to deliver an assertion to either.
    */
   acsUrls?: string[];
+  /**
+   * Which element the signature covers. Defaults to `'assertion'`, which is
+   * what every identity provider this package was built against does, and what
+   * every existing consumer already gets.
+   *
+   * `'response'` exists because a relying party may require it — a validator
+   * that treats `Status` and `Destination` as controls can only do so when
+   * they are inside the signature.
+   */
+  signWhat?: 'assertion' | 'response';
 }
 
 export interface MockSamlIdp extends MockHandle {
@@ -249,17 +259,24 @@ function buildResponseXml(p: ResponseParams): string {
  * correctly and then mutates signed content, breaking the reference digest
  * without touching the signature value itself. Every other variant is
  * signed normally — signing is not part of any other variant's one-field
- * change.
+ * change. `signWhat` governs which element the `Reference` names, and is
+ * independent of the variant being applied.
  */
 function applySigning(
   xml: string,
   variant: SamlVariant,
   key: KeyMaterial,
   otherKey: () => KeyMaterial,
+  signWhat: 'assertion' | 'response',
 ): string {
   if (variant === 'unsigned') return xml;
   const signingKey = variant === 'wrongKey' ? otherKey() : key;
-  let signed = signXml(xml, signingKey);
+  let signed =
+    signWhat === 'response'
+      ? signXml(xml, signingKey, {
+          referenceXPath: "//*[local-name(.)='Response']",
+        })
+      : signXml(xml, signingKey);
   if (variant === 'tamperedAfterSign') {
     // Alters signed text content while leaving the document well-formed, so
     // the RSA signature value still checks out and only the reference
@@ -276,6 +293,7 @@ export async function startMockSamlIdp(
   const audience = options.audience ?? 'mock-sp';
   let variant: SamlVariant = options.variant ?? 'valid';
   const registeredAcsUrls = options.acsUrls;
+  const signWhat = options.signWhat ?? 'assertion';
 
   const key = generateKeyMaterial();
   // Generated lazily: most instances never use the wrongKey variant, and
@@ -476,7 +494,7 @@ export async function startMockSamlIdp(
         requestId,
         assertionId,
       });
-      const signed = applySigning(xml, variant, key, otherKey);
+      const signed = applySigning(xml, variant, key, otherKey, signWhat);
       const samlResponse = Buffer.from(signed, 'utf8').toString('base64');
 
       res.setHeader('Content-Type', 'text/html');
