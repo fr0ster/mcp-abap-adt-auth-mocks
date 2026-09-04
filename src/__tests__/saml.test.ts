@@ -398,6 +398,58 @@ describe('mock SAML IdP', () => {
   // (its namespaceURI is null), so deleting only the local-name comparison
   // leaves that test green. Only a same-namespace, different-name document
   // element exposes it.
+  it('signs the Response itself when asked to', async () => {
+    const acs = await startAcs();
+    const idp = await startMockSamlIdp({
+      acsUrls: [`${acs.url}/callback`],
+      signWhat: 'response',
+    });
+    try {
+      await visit(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
+      );
+      const xml = Buffer.from(acs.received[0].SAMLResponse, 'base64').toString(
+        'utf8',
+      );
+      // Two properties, and neither is document order: `signXml` appends the
+      // Signature to the element it references, so in this mode it lands *after*
+      // the Assertion, and asserting otherwise would fail against a correct
+      // implementation. What matters is which element it references and whose
+      // child it is.
+      const responseId = /<samlp:Response[^>]*\sID="([^"]+)"/.exec(xml)?.[1];
+      expect(responseId).toBeTruthy();
+      expect(xml).toContain(`URI="#${responseId}"`);
+
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      const signature = doc.getElementsByTagNameNS(
+        'http://www.w3.org/2000/09/xmldsig#',
+        'Signature',
+      )[0];
+      expect(signature.parentNode?.localName).toBe('Response');
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('still signs the Assertion when not asked', async () => {
+    const acs = await startAcs();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
+    try {
+      await visit(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
+      );
+      const xml = Buffer.from(acs.received[0].SAMLResponse, 'base64').toString(
+        'utf8',
+      );
+      const assertionId = /<saml:Assertion[^>]*\sID="([^"]+)"/.exec(xml)?.[1];
+      expect(xml).toContain(`URI="#${assertionId}"`);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
   it('refuses a correctly namespaced document element that is not an AuthnRequest', async () => {
     const idp = await startMockSamlIdp();
     try {

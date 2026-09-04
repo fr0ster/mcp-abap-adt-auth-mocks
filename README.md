@@ -293,6 +293,7 @@ alongside the default need not retype the literal.
 | `variant`  | `'valid'`    | Which single field of the response to corrupt; see the variants table.                                                                                                                   |
 | `issuer`   | `'mock-idp'` | The `Issuer` on both the `Response` and the `Assertion`.                                                                                                                                 |
 | `audience` | `'mock-sp'`  | The `Audience` inside `AudienceRestriction`.                                                                                                                                             |
+| `signWhat` | `'assertion'` | `'assertion'` signs only the `Assertion`, what every real identity provider this package was built against does. `'response'` signs the whole `samlp:Response` instead, so `Status` and `Destination` fall inside the signature too — for a relying party whose validator treats those as controls rather than trusting them unsigned. |
 
 `SamlVariant` is exported for typing a variant table of your own.
 

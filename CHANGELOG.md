@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-03
+
+### Added
+
+- `SamlOptions` gains `signWhat?: 'assertion' | 'response'`, defaulting to
+  `'assertion'` — every existing consumer keeps exactly what they already
+  get. `'response'` signs the whole `samlp:Response` instead of just the
+  `Assertion`, so a relying party's validator can treat `Status` and
+  `Destination` as controls rather than as unsigned content it must trust
+  anyway. `signXml` already supported signing an arbitrary referenced
+  element; this only wires `startMockSamlIdp`'s one signing call to it.
+
 ### Licence
 
 - **This package is now `LGPL-3.0-only`.** It was MIT up to and including 0.1.1, and
