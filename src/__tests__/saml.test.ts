@@ -388,16 +388,6 @@ describe('mock SAML IdP', () => {
     }
   });
 
-  // Proves the local-name half specifically, the mirror image of the test
-  // above. This document element sits in the *real* SAML protocol
-  // namespace and carries both AssertionConsumerServiceURL and ID — a
-  // check that only compared `namespaceURI` would accept it. A
-  // `samlp:LogoutRequest` is exactly the kind of correctly-namespaced,
-  // wrongly-named request a whole-`if`-disabled mutation proof cannot
-  // distinguish from `<hello>`: `<hello>` also fails the namespace half
-  // (its namespaceURI is null), so deleting only the local-name comparison
-  // leaves that test green. Only a same-namespace, different-name document
-  // element exposes it.
   it('signs the Response itself when asked to', async () => {
     const acs = await startAcs();
     const idp = await startMockSamlIdp({
@@ -450,6 +440,16 @@ describe('mock SAML IdP', () => {
     }
   });
 
+  // Proves the local-name half specifically, the mirror image of the test
+  // above. This document element sits in the *real* SAML protocol
+  // namespace and carries both AssertionConsumerServiceURL and ID — a
+  // check that only compared `namespaceURI` would accept it. A
+  // `samlp:LogoutRequest` is exactly the kind of correctly-namespaced,
+  // wrongly-named request a whole-`if`-disabled mutation proof cannot
+  // distinguish from `<hello>`: `<hello>` also fails the namespace half
+  // (its namespaceURI is null), so deleting only the local-name comparison
+  // leaves that test green. Only a same-namespace, different-name document
+  // element exposes it.
   it('refuses a correctly namespaced document element that is not an AuthnRequest', async () => {
     const idp = await startMockSamlIdp();
     try {
@@ -1364,6 +1364,63 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
       await idp.close();
       await acs.close();
     }
+  });
+
+  // With the signature over the whole Response, the variants that corrupt the
+  // signature must stay detectable — a relying party validating in that mode
+  // depends on it. The valid case comes first: without it, "the check fails"
+  // would also pass if response signing were simply broken.
+  describe("with signWhat: 'response'", () => {
+    it('a valid response verifies against the shipped certificate', async () => {
+      const acs = await startAcs();
+      const idp = await startMockSamlIdp({
+        signWhat: 'response',
+        acsUrls: [`${acs.url}/callback`],
+      });
+      try {
+        const xml = await deliveredXml(idp, `${acs.url}/callback`, acs);
+        const verifier = signatureVerifier(xml, idp.certificatePem);
+        expect(verifier.checkSignature(xml)).toBe(true);
+      } finally {
+        await idp.close();
+        await acs.close();
+      }
+    });
+
+    it('wrongKey still fails the signature value', async () => {
+      const acs = await startAcs();
+      const idp = await startMockSamlIdp({
+        variant: 'wrongKey',
+        signWhat: 'response',
+        acsUrls: [`${acs.url}/callback`],
+      });
+      try {
+        const xml = await deliveredXml(idp, `${acs.url}/callback`, acs);
+        const verifier = signatureVerifier(xml, idp.certificatePem);
+        expect(() => verifier.checkSignature(xml)).toThrow(/invalid signature/);
+      } finally {
+        await idp.close();
+        await acs.close();
+      }
+    });
+
+    it('tamperedAfterSign still breaks the reference digest', async () => {
+      const acs = await startAcs();
+      const idp = await startMockSamlIdp({
+        variant: 'tamperedAfterSign',
+        signWhat: 'response',
+        acsUrls: [`${acs.url}/callback`],
+      });
+      try {
+        const xml = await deliveredXml(idp, `${acs.url}/callback`, acs);
+        expect(xml).toContain('mock-user-tampered');
+        const verifier = signatureVerifier(xml, idp.certificatePem);
+        expect(verifier.checkSignature(xml)).toBe(false);
+      } finally {
+        await idp.close();
+        await acs.close();
+      }
+    });
   });
 
   it('wrongDestination leaves Recipient pointing at the real ACS', async () => {
