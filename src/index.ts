@@ -15,7 +15,7 @@ export { startMockOidc } from './oidc';
 export type { MockSamlIdp, SamlOptions, SamlVariant } from './saml';
 export { startMockSamlIdp } from './saml';
 export type { MockHandle, RecordedRequest } from './server';
-export type { KeyMaterial } from './signing';
+export type { KeyMaterial, SignatureLocation } from './signing';
 export { generateKeyMaterial, signXml } from './signing';
 export type { MockUaa, UaaOptions } from './uaa';
 export { startMockUaa } from './uaa';

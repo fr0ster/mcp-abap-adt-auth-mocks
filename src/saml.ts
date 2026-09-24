@@ -271,10 +271,18 @@ function applySigning(
 ): string {
   if (variant === 'unsigned') return xml;
   const signingKey = variant === 'wrongKey' ? otherKey() : key;
+  // SAML Core's ResponseType, like AssertionType, puts the Signature right
+  // after the element's own Issuer — before Status. Only the Response's direct
+  // Issuer child matches; the Assertion's Issuer is a grandchild.
   let signed =
     signWhat === 'response'
       ? signXml(xml, signingKey, {
           referenceXPath: "//*[local-name(.)='Response']",
+          location: {
+            reference:
+              "//*[local-name(.)='Response']/*[local-name(.)='Issuer']",
+            action: 'after',
+          },
         })
       : signXml(xml, signingKey);
   if (variant === 'tamperedAfterSign') {

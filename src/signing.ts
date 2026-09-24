@@ -45,10 +45,20 @@ const DEFAULT_REFERENCE = "//*[local-name(.)='Assertion']";
  */
 const SCHEMA_SIGNATURE_LOCATION = `${DEFAULT_REFERENCE}/*[local-name(.)='Issuer']`;
 
+/**
+ * Where to insert the `Signature`, in xml-crypto's own terms: an XPath to an
+ * existing node, and whether the `Signature` goes before or after it, or
+ * becomes its first or last child.
+ */
+export interface SignatureLocation {
+  reference: string;
+  action: 'append' | 'prepend' | 'before' | 'after';
+}
+
 export function signXml(
   xml: string,
   key: KeyMaterial,
-  opts: { referenceXPath?: string } = {},
+  opts: { referenceXPath?: string; location?: SignatureLocation } = {},
 ): string {
   const referenceXPath = opts.referenceXPath ?? DEFAULT_REFERENCE;
   const sig = new SignedXml({
@@ -68,14 +78,17 @@ export function signXml(
   // The default reference signs a SAML Assertion, so the Signature can go
   // exactly where the schema puts it — right after the Assertion's own
   // Issuer. A caller-supplied referenceXPath signs an arbitrary element that
-  // is not guaranteed to have an Issuer child at all, so it falls back to
-  // appending the Signature as that element's own last child: still the
-  // referenced element's child, which is what satisfies a structural
-  // verifier, just not schema-ordered.
-  const location =
-    opts.referenceXPath === undefined
-      ? { reference: SCHEMA_SIGNATURE_LOCATION, action: 'after' as const }
-      : { reference: referenceXPath, action: 'append' as const };
+  // is not guaranteed to have an Issuer child at all, so without an explicit
+  // location it falls back to appending the Signature as that element's own
+  // last child: still the referenced element's child, which is what
+  // satisfies a structural verifier, just not schema-ordered. A caller that
+  // knows the schema of what it signs passes `location` and gets the order
+  // right.
+  const location: SignatureLocation =
+    opts.location ??
+    (opts.referenceXPath === undefined
+      ? { reference: SCHEMA_SIGNATURE_LOCATION, action: 'after' }
+      : { reference: referenceXPath, action: 'append' });
   sig.computeSignature(xml, { location });
   return sig.getSignedXml();
 }

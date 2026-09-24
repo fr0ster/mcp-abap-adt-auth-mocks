@@ -401,11 +401,8 @@ describe('mock SAML IdP', () => {
       const xml = Buffer.from(acs.received[0].SAMLResponse, 'base64').toString(
         'utf8',
       );
-      // Two properties, and neither is document order: `signXml` appends the
-      // Signature to the element it references, so in this mode it lands *after*
-      // the Assertion, and asserting otherwise would fail against a correct
-      // implementation. What matters is which element it references and whose
-      // child it is.
+      // Three properties: which element the Reference names, whose child the
+      // Signature is, and where among that element's children it sits.
       const responseId = /<samlp:Response[^>]*\sID="([^"]+)"/.exec(xml)?.[1];
       expect(responseId).toBeTruthy();
       expect(xml).toContain(`URI="#${responseId}"`);
@@ -416,6 +413,13 @@ describe('mock SAML IdP', () => {
         'Signature',
       )[0];
       expect(signature.parentNode?.localName).toBe('Response');
+      // SAML Core ResponseType: Issuer, Signature, Extensions?, Status, then
+      // the assertions. Appended last, the Signature would follow the
+      // Assertion — schema-invalid, and refused by a strict relying party.
+      const children = Array.from(doc.documentElement?.childNodes ?? [])
+        .filter((n) => n.nodeType === 1)
+        .map((n) => (n as unknown as { localName: string }).localName);
+      expect(children).toEqual(['Issuer', 'Signature', 'Status', 'Assertion']);
     } finally {
       await idp.close();
       await acs.close();
