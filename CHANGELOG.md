@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+### Added
+
+- `SamlOptions` gains `signWhat?: 'assertion' | 'response'`, defaulting to
+  `'assertion'` — every existing consumer keeps exactly what they already
+  get. `'response'` signs the whole `samlp:Response` instead of just the
+  `Assertion`, so a relying party's validator can treat `Status` and
+  `Destination` as controls rather than as unsigned content it must trust
+  anyway. The `Signature` sits where SAML Core's `ResponseType` puts it —
+  right after the Response's `Issuer`, before `Status` — so the document stays
+  schema-valid for a strict relying party.
+- `signXml` takes an optional `location: { reference, action }` (exported as
+  `SignatureLocation`) saying where to insert the `Signature`. Without it the
+  behaviour is unchanged: after the Assertion's `Issuer` for the default
+  reference, appended as the last child for a custom `referenceXPath`.
+
 ## [0.2.0] - 2026-09-03
 
 ### Licence

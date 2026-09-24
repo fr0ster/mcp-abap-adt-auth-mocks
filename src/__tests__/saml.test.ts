@@ -388,6 +388,62 @@ describe('mock SAML IdP', () => {
     }
   });
 
+  it('signs the Response itself when asked to', async () => {
+    const acs = await startAcs();
+    const idp = await startMockSamlIdp({
+      acsUrls: [`${acs.url}/callback`],
+      signWhat: 'response',
+    });
+    try {
+      await visit(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
+      );
+      const xml = Buffer.from(acs.received[0].SAMLResponse, 'base64').toString(
+        'utf8',
+      );
+      // Three properties: which element the Reference names, whose child the
+      // Signature is, and where among that element's children it sits.
+      const responseId = /<samlp:Response[^>]*\sID="([^"]+)"/.exec(xml)?.[1];
+      expect(responseId).toBeTruthy();
+      expect(xml).toContain(`URI="#${responseId}"`);
+
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      const signature = doc.getElementsByTagNameNS(
+        'http://www.w3.org/2000/09/xmldsig#',
+        'Signature',
+      )[0];
+      expect(signature.parentNode?.localName).toBe('Response');
+      // SAML Core ResponseType: Issuer, Signature, Extensions?, Status, then
+      // the assertions. Appended last, the Signature would follow the
+      // Assertion — schema-invalid, and refused by a strict relying party.
+      const children = Array.from(doc.documentElement?.childNodes ?? [])
+        .filter((n) => n.nodeType === 1)
+        .map((n) => (n as unknown as { localName: string }).localName);
+      expect(children).toEqual(['Issuer', 'Signature', 'Status', 'Assertion']);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
+  it('still signs the Assertion when not asked', async () => {
+    const acs = await startAcs();
+    const idp = await startMockSamlIdp({ acsUrls: [`${acs.url}/callback`] });
+    try {
+      await visit(
+        `${idp.url}/sso?SAMLRequest=${encodeURIComponent(authnRequest(`${acs.url}/callback`))}`,
+      );
+      const xml = Buffer.from(acs.received[0].SAMLResponse, 'base64').toString(
+        'utf8',
+      );
+      const assertionId = /<saml:Assertion[^>]*\sID="([^"]+)"/.exec(xml)?.[1];
+      expect(xml).toContain(`URI="#${assertionId}"`);
+    } finally {
+      await idp.close();
+      await acs.close();
+    }
+  });
+
   // Proves the local-name half specifically, the mirror image of the test
   // above. This document element sits in the *real* SAML protocol
   // namespace and carries both AssertionConsumerServiceURL and ID — a
@@ -1312,6 +1368,63 @@ describe('mock SAML IdP — remaining variant-table entries', () => {
       await idp.close();
       await acs.close();
     }
+  });
+
+  // With the signature over the whole Response, the variants that corrupt the
+  // signature must stay detectable — a relying party validating in that mode
+  // depends on it. The valid case comes first: without it, "the check fails"
+  // would also pass if response signing were simply broken.
+  describe("with signWhat: 'response'", () => {
+    it('a valid response verifies against the shipped certificate', async () => {
+      const acs = await startAcs();
+      const idp = await startMockSamlIdp({
+        signWhat: 'response',
+        acsUrls: [`${acs.url}/callback`],
+      });
+      try {
+        const xml = await deliveredXml(idp, `${acs.url}/callback`, acs);
+        const verifier = signatureVerifier(xml, idp.certificatePem);
+        expect(verifier.checkSignature(xml)).toBe(true);
+      } finally {
+        await idp.close();
+        await acs.close();
+      }
+    });
+
+    it('wrongKey still fails the signature value', async () => {
+      const acs = await startAcs();
+      const idp = await startMockSamlIdp({
+        variant: 'wrongKey',
+        signWhat: 'response',
+        acsUrls: [`${acs.url}/callback`],
+      });
+      try {
+        const xml = await deliveredXml(idp, `${acs.url}/callback`, acs);
+        const verifier = signatureVerifier(xml, idp.certificatePem);
+        expect(() => verifier.checkSignature(xml)).toThrow(/invalid signature/);
+      } finally {
+        await idp.close();
+        await acs.close();
+      }
+    });
+
+    it('tamperedAfterSign still breaks the reference digest', async () => {
+      const acs = await startAcs();
+      const idp = await startMockSamlIdp({
+        variant: 'tamperedAfterSign',
+        signWhat: 'response',
+        acsUrls: [`${acs.url}/callback`],
+      });
+      try {
+        const xml = await deliveredXml(idp, `${acs.url}/callback`, acs);
+        expect(xml).toContain('mock-user-tampered');
+        const verifier = signatureVerifier(xml, idp.certificatePem);
+        expect(verifier.checkSignature(xml)).toBe(false);
+      } finally {
+        await idp.close();
+        await acs.close();
+      }
+    });
   });
 
   it('wrongDestination leaves Recipient pointing at the real ACS', async () => {

@@ -90,4 +90,36 @@ describe('signing', () => {
     expect(verify(signed.replace('alpha', 'ALPHA-CHANGED'))).toBe(true);
     expect(verify(signed.replace('beta', 'BETA-CHANGED'))).toBe(false);
   });
+
+  // Without `location`, a custom reference gets the Signature appended as the
+  // referenced element's last child. With it, the caller chooses — which is
+  // what lets a signed SAML Response put it after its Issuer, as the schema
+  // requires, instead of after the Assertion.
+  it('places the Signature where an explicit location says', () => {
+    const key = generateKeyMaterial();
+    const doc = `<Root xmlns="urn:test" ID="_root"><Head/><Body>x</Body></Root>`;
+    const childNames = (xml: string): string[] =>
+      Array.from(
+        new DOMParser().parseFromString(xml, 'text/xml').documentElement
+          ?.childNodes ?? [],
+      )
+        .filter((n) => n.nodeType === 1)
+        .map((n) => (n as unknown as { localName: string }).localName);
+    const reference = "//*[local-name(.)='Root']";
+
+    expect(
+      childNames(signXml(doc, key, { referenceXPath: reference })),
+    ).toEqual(['Head', 'Body', 'Signature']);
+    expect(
+      childNames(
+        signXml(doc, key, {
+          referenceXPath: reference,
+          location: {
+            reference: "//*[local-name(.)='Head']",
+            action: 'after',
+          },
+        }),
+      ),
+    ).toEqual(['Head', 'Signature', 'Body']);
+  });
 });
