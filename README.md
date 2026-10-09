@@ -545,7 +545,10 @@ would hide the same finding this package exists to surface.
 ## What signature verification here does and does not prove
 
 `src/signing.ts` generates a fresh, in-memory, self-signed certificate per
-mock instance and signs SAML assertions with XML-DSig via `xml-crypto`. Its
+mock instance — an RSA-2048 key from `node:crypto` and an X.509 v3
+certificate (`CN=mock-idp`, valid for 24 hours) DER-encoded by `src/x509.ts`,
+with no third-party crypto library — and signs SAML assertions with XML-DSig
+via `xml-crypto`. Its
 own test suite (`src/__tests__/signing.test.ts`) exists to prove the
 signature is real — bound to the content and to the private key — not to
 prove the mock IdP is a faithful stand-in for a real one. Concretely:

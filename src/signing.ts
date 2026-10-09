@@ -6,8 +6,9 @@
  * it exists so that a signature can be produced and then verified.
  */
 
-import forge from 'node-forge';
+import { generateKeyPairSync } from 'node:crypto';
 import { SignedXml } from 'xml-crypto';
+import { certificateToPem, selfSignedCertificate } from './x509';
 
 export interface KeyMaterial {
   privateKeyPem: string;
@@ -15,20 +16,26 @@ export interface KeyMaterial {
 }
 
 export function generateKeyMaterial(): KeyMaterial {
-  const keys = forge.pki.rsa.generateKeyPair(2048);
-  const cert = forge.pki.createCertificate();
-  cert.publicKey = keys.publicKey;
-  cert.serialNumber = '01';
-  cert.validity.notBefore = new Date(Date.now() - 60_000);
-  cert.validity.notAfter = new Date(Date.now() + 24 * 3600 * 1000);
-  const attrs = [{ name: 'commonName', value: 'mock-idp' }];
-  cert.setSubject(attrs);
-  cert.setIssuer(attrs);
-  cert.sign(keys.privateKey, forge.md.sha256.create());
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+  });
+  const now = Date.now();
+  const der = selfSignedCertificate({
+    commonName: 'mock-idp',
+    serial: Buffer.from([0x01]),
+    notBefore: new Date(now - 60_000),
+    notAfter: new Date(now + 24 * 3600 * 1000),
+    publicKey,
+    privateKey,
+  });
 
   return {
-    privateKeyPem: forge.pki.privateKeyToPem(keys.privateKey),
-    certificatePem: forge.pki.certificateToPem(cert),
+    // PKCS#1 ("BEGIN RSA PRIVATE KEY"), the form this package has always
+    // handed out.
+    privateKeyPem: privateKey
+      .export({ type: 'pkcs1', format: 'pem' })
+      .toString(),
+    certificatePem: certificateToPem(der),
   };
 }
 
