@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Changed
+
+- `node-forge` removed (and `@types/node-forge` with it): the mock IdP's
+  certificate is built with `node:crypto` — an RSA-2048 key from
+  `generateKeyPairSync` and a self-signed X.509 v3 certificate DER-encoded by
+  `src/x509.ts` and signed with `crypto.sign`. The API is unchanged:
+  `generateKeyMaterial()` returns the same `KeyMaterial` — a PKCS#1 private
+  key PEM and a certificate PEM for `CN=mock-idp`, serial `01`, valid from
+  60 seconds ago for 24 hours, signed with sha256WithRSAEncryption. Consumers
+  that dev-depend on this package no longer pull `node-forge` in.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added
