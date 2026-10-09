@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/auth-mocks",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Protocol-faithful mock authorization servers (UAA/OAuth2, OIDC, SAML IdP) for testing @mcp-abap-adt packages",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,7 +25,6 @@
   },
   "dependencies": {
     "@xmldom/xmldom": "^0.9.10",
-    "node-forge": "^1.4.0",
     "xml-crypto": "^6.1.2"
   },
   "devDependencies": {
@@ -34,7 +33,6 @@
     "@node-saml/node-saml": "^5.1.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.2.3",
-    "@types/node-forge": "^1.3.11",
     "jest": "^30.2.0",
     "ts-jest": "^29.2.5",
     "typescript": "^5.9.2"
